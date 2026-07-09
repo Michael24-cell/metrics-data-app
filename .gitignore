@@ -10,3 +10,7 @@ coverage
 *.sqlite
 *.sqlite3
 data/private
+
+# SQLite runtime files
+data/*.db-shm
+data/*.db-wal
