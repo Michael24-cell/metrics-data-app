@@ -1,0 +1,593 @@
+/**
+ * Demo seed. Deletes and rebuilds data/tracelab.db.
+ *
+ * Everything flows through the real adapter pipeline
+ * (inspect → map → validate → import_raw → compute_metrics → generate_outputs):
+ * - synthetic force-time waveforms at 1000 Hz for force-plate athletes
+ * - a CSV import (sided IMTP values) for one athlete
+ * - a manual entry session
+ * - a bundled demo-dataset import (metric-only, no per-side data)
+ * Metrics in the DB are COMPUTED by the calc engine, not hardcoded.
+ */
+
+import fs from "node:fs";
+import path from "node:path";
+
+const dbPath = path.join(process.cwd(), "data", "tracelab.db");
+if (fs.existsSync(dbPath)) fs.rmSync(dbPath);
+for (const suffix of ["-wal", "-shm", "-journal"]) {
+  if (fs.existsSync(dbPath + suffix)) fs.rmSync(dbPath + suffix);
+}
+
+import { getDb, newId, nowIso } from "../src/lib/db/db";
+import { generateCmjTrace, generateImtpTrace, generateDjTrace, rng } from "../src/lib/calc/synthetic";
+import {
+  syntheticSignalAdapter,
+  csvGenericAdapter,
+  manualEntryAdapter,
+  demoDatasetAdapter,
+  vendorStubs,
+  runImportBatch,
+  SyntheticInput,
+} from "../src/lib/pipeline/adapters";
+import { fitLoadVelocityProfile } from "../src/lib/calc/profiles";
+
+const db = getDb();
+const now = nowIso();
+
+/** Demo clock: "today" for the demo universe. */
+const TODAY = "2026-07-09";
+
+const addDays = (iso: string, days: number) => {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+
+/* ---------------- facilities ---------------- */
+
+const RPI = newId();
+const HCFC = newId();
+db.prepare(`INSERT INTO facility (id, name, short_name, created_at) VALUES (?, ?, ?, ?)`).run(
+  RPI, "Ridgeline Performance Institute", "Ridgeline", now
+);
+db.prepare(`INSERT INTO facility (id, name, short_name, created_at) VALUES (?, ?, ?, ?)`).run(
+  HCFC, "Harbor City FC", "Harbor City", now
+);
+
+/* ---------------- devices ---------------- */
+
+function addDevice(facilityId: string, deviceType: string, make: string, model: string, hz: number | null) {
+  const id = newId();
+  db.prepare(
+    `INSERT INTO device (id, facility_id, device_type, make, model, sampling_hz, last_calibrated_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, facilityId, deviceType, make, model, hz, "2026-06-15", now);
+  return id;
+}
+const rpiPlate = addDevice(RPI, "dual_force_plate", "Axiom", "FD-2 Dual Plate", 1000);
+const rpiLpt = addDevice(RPI, "linear_transducer", "PushPull", "LT-1", null);
+addDevice(RPI, "manual", "—", "Manual entry", null);
+const hcfcPlate = addDevice(HCFC, "dual_force_plate", "Axiom", "FD-2 Dual Plate", 1000);
+
+/* ---------------- data sources (incl. stubs) ---------------- */
+
+function addSource(facilityId: string, adapterKey: string, label: string, kind: string) {
+  const id = newId();
+  db.prepare(
+    `INSERT INTO data_source (id, facility_id, adapter_key, label, kind, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(id, facilityId, adapterKey, label, kind, now);
+  return id;
+}
+const srcSynthetic = addSource(RPI, "synthetic_signal", "Force Plate Capture (demo signals)", "operational");
+const srcCsv = addSource(RPI, "csv_generic", "Generic CSV Mapper", "operational");
+const srcManual = addSource(RPI, "manual_entry", "Manual Entry", "operational");
+const srcDemo = addSource(RPI, "demo_dataset", "Public/Demo Dataset", "operational");
+for (const stub of vendorStubs) addSource(RPI, stub.key, stub.label, "stub");
+const srcSyntheticHc = addSource(HCFC, "synthetic_signal", "Force Plate Capture (demo signals)", "operational");
+
+/* ---------------- thresholds ---------------- */
+
+function addThreshold(facilityId: string, key: string, value: number, metricType: string | null = null) {
+  db.prepare(
+    `INSERT INTO threshold_setting (id, facility_id, key, metric_type, value, version, set_by, active, created_at)
+     VALUES (?, ?, ?, ?, ?, 1, 'Head of Performance', 1, ?)`
+  ).run(newId(), facilityId, key, metricType, value, now);
+}
+addThreshold(RPI, "asymmetry_watch_pct", 10);
+addThreshold(RPI, "asymmetry_flag_pct", 15);
+addThreshold(HCFC, "asymmetry_watch_pct", 8);
+addThreshold(HCFC, "asymmetry_flag_pct", 12);
+
+/* ---------------- athletes ---------------- */
+
+interface AthleteSpec {
+  id: string;
+  name: string;
+  sport: string;
+  position: string;
+  team: string;
+  sex: string;
+  birthYear: number;
+  heightCm: number;
+  massKg: number;
+  status: string;
+}
+
+function addAthlete(facilityId: string, a: AthleteSpec) {
+  db.prepare(
+    `INSERT INTO athlete (id, facility_id, display_name, sport, position, team, sex, birth_year, height_cm, mass_kg, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(a.id, facilityId, a.name, a.sport, a.position, a.team, a.sex, a.birthYear, a.heightCm, a.massKg, a.status, now);
+  db.prepare(
+    `INSERT INTO permission_record (id, facility_id, athlete_id, scope, granted_by, granted_at, notes)
+     VALUES (?, ?, ?, 'performance_monitoring', 'athlete (signed facility agreement)', ?, NULL)`
+  ).run(newId(), facilityId, a.id, now);
+}
+
+const maya: AthleteSpec = { id: newId(), name: "Maya Okafor", sport: "Basketball", position: "Guard", team: "Women's Basketball", sex: "F", birthYear: 2002, heightCm: 178, massKg: 71, status: "rts" };
+const tessa: AthleteSpec = { id: newId(), name: "Tessa Lindqvist", sport: "Volleyball", position: "Outside Hitter", team: "Women's Volleyball", sex: "F", birthYear: 2003, heightCm: 183, massKg: 68, status: "active" };
+const dario: AthleteSpec = { id: newId(), name: "Dario Reyes", sport: "Soccer", position: "Fullback", team: "Men's Soccer", sex: "M", birthYear: 2001, heightCm: 176, massKg: 74, status: "active" };
+const jonas: AthleteSpec = { id: newId(), name: "Jonas Verbeek", sport: "Rowing", position: "Stroke", team: "Men's Rowing", sex: "M", birthYear: 2000, heightCm: 192, massKg: 88, status: "active" };
+const priya: AthleteSpec = { id: newId(), name: "Priya Shah", sport: "Track & Field", position: "100m/200m", team: "Women's Track", sex: "F", birthYear: 2004, heightCm: 165, massKg: 58, status: "active" };
+const malik: AthleteSpec = { id: newId(), name: "Malik Thompson", sport: "Football", position: "Linebacker", team: "Football", sex: "M", birthYear: 2002, heightCm: 188, massKg: 104, status: "active" };
+const elena: AthleteSpec = { id: newId(), name: "Elena Brooks", sport: "Basketball", position: "Forward", team: "Women's Basketball", sex: "F", birthYear: 2003, heightCm: 185, massKg: 78, status: "active" };
+const sofia: AthleteSpec = { id: newId(), name: "Sofia Marchetti", sport: "Soccer", position: "Winger", team: "Women's Soccer", sex: "F", birthYear: 2005, heightCm: 168, massKg: 61, status: "active" };
+
+for (const a of [maya, tessa, dario, jonas, priya, malik, elena, sofia]) addAthlete(RPI, a);
+
+// Maya has an extra permission scope: her (anonymized-placeholder) case study display
+db.prepare(
+  `INSERT INTO permission_record (id, facility_id, athlete_id, scope, granted_by, granted_at, notes)
+   VALUES (?, ?, ?, 'demo_display', 'athlete (written consent, demo placeholder)', ?, 'Case study uses placeholder identity and demo data only.')`
+).run(newId(), RPI, maya.id, now);
+
+const kofi: AthleteSpec = { id: newId(), name: "Kofi Mensah", sport: "Soccer", position: "Striker", team: "First Team", sex: "M", birthYear: 1999, heightCm: 181, massKg: 77, status: "active" };
+const lucas: AthleteSpec = { id: newId(), name: "Lucas Ortega", sport: "Soccer", position: "Midfielder", team: "First Team", sex: "M", birthYear: 2001, heightCm: 174, massKg: 70, status: "active" };
+for (const a of [kofi, lucas]) addAthlete(HCFC, a);
+
+/* ---------------- injury / RTS protocol for Maya ---------------- */
+
+const injuryId = newId();
+db.prepare(
+  `INSERT INTO injury_record (id, facility_id, athlete_id, label, involved_side, occurred_on, resolved_on, entered_by, notes, created_at)
+   VALUES (?, ?, ?, ?, 'left', '2026-01-12', NULL, 'Team physiotherapist', ?, ?)`
+).run(
+  injuryId, RPI, maya.id,
+  "Left knee ligament reconstruction (practitioner-entered)",
+  "Injury and surgical details are maintained by the clinical team. This platform stores only the label, side, and dates needed to organize performance data.",
+  now
+);
+
+const protocolId = newId();
+db.prepare(
+  `INSERT INTO rts_protocol (id, facility_id, athlete_id, injury_record_id, name, version, status, defined_by, created_at)
+   VALUES (?, ?, ?, ?, 'Lower-limb graded return protocol', 2, 'active', 'Rehab lead + Head of Performance', ?)`
+).run(protocolId, RPI, maya.id, injuryId, now);
+
+function addStage(
+  stageNumber: number, name: string, description: string, status: string,
+  enteredOn: string | null, completedOn: string | null, criteria: object[]
+) {
+  db.prepare(
+    `INSERT INTO rts_stage (id, facility_id, protocol_id, stage_number, name, description, criteria_json, status, entered_on, completed_on)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(newId(), RPI, protocolId, stageNumber, name, description, JSON.stringify(criteria), status, enteredOn, completedOn);
+}
+
+addStage(1, "Early loading", "Re-establish pain-free bilateral loading and baseline testing habits.", "completed", "2026-03-02", "2026-04-19", [
+  { id: "s1c1", label: "Tolerates bilateral CMJ testing (any height recorded)", metric_type: "cmj_jump_height", kind: "absolute", operator: ">=", target: 10, unit: " cm" },
+  { id: "s1c2", label: "IMTP relative force", metric_type: "imtp_relative_force", kind: "absolute", operator: ">=", target: 20, unit: " N/kg" },
+]);
+addStage(2, "Strength restoration", "Rebuild force capacity; track limb symmetry on isometric testing.", "completed", "2026-04-20", "2026-05-31", [
+  { id: "s2c1", label: "IMTP peak force LSI (involved/uninvolved)", metric_type: "imtp_peak_force", kind: "lsi", operator: ">=", target: 85, unit: "%" },
+  { id: "s2c2", label: "CMJ jump height vs pre-injury baseline", metric_type: "cmj_jump_height", kind: "baseline_pct", operator: ">=", target: 75, unit: "%" },
+]);
+addStage(3, "Power & reactive capacity", "Restore braking capacity, reactive strength, and jump output toward pre-injury levels.", "current", "2026-06-01", null, [
+  { id: "s3c1", label: "Eccentric braking impulse LSI (involved/uninvolved)", metric_type: "cmj_ecc_braking_impulse", kind: "lsi", operator: ">=", target: 90, unit: "%" },
+  { id: "s3c2", label: "IMTP peak force LSI (involved/uninvolved)", metric_type: "imtp_peak_force", kind: "lsi", operator: ">=", target: 90, unit: "%" },
+  { id: "s3c3", label: "CMJ jump height vs pre-injury baseline", metric_type: "cmj_jump_height", kind: "baseline_pct", operator: ">=", target: 90, unit: "%" },
+  { id: "s3c4", label: "Drop jump RSI", metric_type: "dj_rsi", kind: "absolute", operator: ">=", target: 2.0, unit: "" },
+]);
+addStage(4, "Sport reintegration", "Progressive return to full team training and competition exposure.", "pending", null, null, [
+  { id: "s4c1", label: "Eccentric braking impulse LSI", metric_type: "cmj_ecc_braking_impulse", kind: "lsi", operator: ">=", target: 95, unit: "%" },
+  { id: "s4c2", label: "CMJ jump height vs pre-injury baseline", metric_type: "cmj_jump_height", kind: "baseline_pct", operator: ">=", target: 95, unit: "%" },
+]);
+
+/* ---------------- clinical assessments (human-authored) ---------------- */
+
+function addAssessment(athleteId: string, on: string, assessor: string, category: string, summary: string) {
+  db.prepare(
+    `INSERT INTO clinical_assessment (id, facility_id, athlete_id, assessed_on, assessor, category, summary, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(newId(), RPI, athleteId, on, assessor, category, summary, now);
+}
+addAssessment(maya.id, "2026-03-01", "Rehab lead", "clearance_note", "Cleared by the clinical team to begin force-plate testing within the graded protocol. Testing is for monitoring only.");
+addAssessment(maya.id, "2026-05-30", "Rehab lead", "screening", "Movement screening satisfactory for progression to Stage 3 per clinical judgment. Data reviewed alongside, not in place of, clinical assessment.");
+addAssessment(maya.id, "2026-07-02", "Team physiotherapist", "subjective_readiness", "Athlete reports confidence in straight-line work; hesitancy on sharp decelerations persists. Consistent with current braking-impulse asymmetry data.");
+
+/* ---------------- milestones ---------------- */
+
+function addMilestone(athleteId: string, on: string, label: string, kind: string) {
+  db.prepare(
+    `INSERT INTO milestone (id, facility_id, athlete_id, milestone_date, label, kind, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(newId(), RPI, athleteId, on, label, kind, now);
+}
+addMilestone(maya.id, "2026-01-12", "Injury (left knee)", "injury");
+addMilestone(maya.id, "2026-01-26", "Surgery", "surgery");
+addMilestone(maya.id, "2026-03-02", "Stage 1 entered — testing resumes", "stage_change");
+addMilestone(maya.id, "2026-04-20", "Stage 2 entered", "stage_change");
+addMilestone(maya.id, "2026-06-01", "Stage 3 entered", "stage_change");
+
+/* ---------------- training sessions ---------------- */
+
+function addTraining(
+  facilityId: string, athleteId: string, on: string, type: string,
+  durationMin: number, rpe: number, notes: string | null = null
+) {
+  const id = newId();
+  db.prepare(
+    `INSERT INTO training_session (id, facility_id, athlete_id, session_date, session_type, duration_min, rpe, load_au, notes, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, facilityId, athleteId, on, type, durationMin, rpe, Math.round(durationMin * rpe), notes, now);
+  return id;
+}
+
+// Maya: rehab strength sessions 3x/week from March
+{
+  let d = "2026-03-03";
+  const rand = rng(2026);
+  while (d <= TODAY) {
+    addTraining(RPI, maya.id, d, "rehab", 60 + Math.round(rand() * 20), 5 + Math.round(rand() * 2));
+    d = addDays(d, 2 + Math.round(rand() * 2));
+  }
+}
+
+// Tessa: normal block, then a deliberately heavy week before her last two tests
+{
+  let d = "2026-05-01";
+  const rand = rng(77);
+  while (d <= "2026-06-28") {
+    addTraining(RPI, tessa.id, d, "practice", 75, 5 + Math.round(rand() * 2));
+    d = addDays(d, 2);
+  }
+  // heavy loading 72h before the two flagged test sessions (2026-07-03, 2026-07-07)
+  addTraining(RPI, tessa.id, "2026-06-30", "conditioning", 110, 9, "High-volume conditioning block");
+  addTraining(RPI, tessa.id, "2026-07-01", "strength", 100, 9, "Heavy lower-body strength");
+  addTraining(RPI, tessa.id, "2026-07-04", "conditioning", 115, 9, "Repeat sprint session");
+  addTraining(RPI, tessa.id, "2026-07-05", "practice", 105, 8);
+}
+
+/* ---------------- VBT: exercise sets + velocity reps for Maya ---------------- */
+
+{
+  const rand = rng(5150);
+  // three L–V characterization sessions across rehab, back squat
+  const sessions: { date: string; loads: number[]; baseV: number }[] = [
+    { date: "2026-04-10", loads: [40, 55, 70, 85], baseV: 1.02 },
+    { date: "2026-05-22", loads: [45, 60, 75, 90], baseV: 1.06 },
+    { date: "2026-07-01", loads: [50, 65, 80, 95], baseV: 1.1 },
+  ];
+  let lastPoints: { loadKg: number; meanVelocityMs: number }[] = [];
+  for (const s of sessions) {
+    const tsId = addTraining(RPI, maya.id, s.date, "strength", 70, 7, "Load–velocity characterization: back squat");
+    const points: { loadKg: number; meanVelocityMs: number }[] = [];
+    s.loads.forEach((load, i) => {
+      const setId = newId();
+      db.prepare(
+        `INSERT INTO exercise_set (id, facility_id, training_session_id, exercise, set_number, load_kg, reps, created_at)
+         VALUES (?, ?, ?, 'back_squat', ?, ?, 3, ?)`
+      ).run(setId, RPI, tsId, i + 1, load, now);
+      const setVel = s.baseV - load * 0.0072 + (rand() - 0.5) * 0.03;
+      for (let rep = 1; rep <= 3; rep++) {
+        db.prepare(
+          `INSERT INTO velocity_rep (id, facility_id, exercise_set_id, rep_number, mean_velocity_ms, peak_velocity_ms, method_version, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, '1.0.0', ?)`
+        ).run(newId(), RPI, setId, rep, Math.round((setVel + (rand() - 0.5) * 0.04) * 100) / 100, Math.round((setVel * 1.6) * 100) / 100, now);
+      }
+      points.push({ loadKg: load, meanVelocityMs: Math.round(setVel * 100) / 100 });
+    });
+    lastPoints = points;
+    const profile = fitLoadVelocityProfile("back_squat", points);
+    db.prepare(
+      `INSERT INTO load_velocity_profile (id, facility_id, athlete_id, exercise, slope, intercept, r2, n_points, method_version, provisional, fitted_on, points_json, created_at)
+       VALUES (?, ?, ?, 'back_squat', ?, ?, ?, ?, ?, 1, ?, ?, ?)`
+    ).run(newId(), RPI, maya.id, profile.fit.slope, profile.fit.intercept, profile.fit.r2, profile.fit.n, profile.methodVersion, s.date, JSON.stringify(points), now);
+  }
+  void lastPoints;
+}
+
+/* ---------------- synthetic force-plate histories ---------------- */
+
+interface CmjSessionSpec { date: string; v: number; depth: number; leftShare: number; }
+interface ImtpSessionSpec { date: string; peakNet: number; tau: number; leftShare: number; }
+interface DjSessionSpec { date: string; contact: number; flight: number; }
+
+function buildSyntheticInput(
+  athlete: AthleteSpec, cmj: CmjSessionSpec[], imtp: ImtpSessionSpec[], dj: DjSessionSpec[],
+  deviceId: string, seedBase: number
+): SyntheticInput {
+  const sessions: SyntheticInput["sessions"] = [];
+  cmj.forEach((s, si) => {
+    sessions.push({
+      athleteId: athlete.id, testType: "cmj", sessionDate: s.date, deviceId,
+      trials: [0, 1, 2].map((ti) => ({
+        trialNumber: ti + 1,
+        waveform: generateCmjTrace({
+          massKg: athlete.massKg,
+          takeoffVelocity: s.v + (ti - 1) * 0.015,
+          depthFactor: s.depth,
+          leftShare: s.leftShare,
+          seed: seedBase + si * 10 + ti,
+        }),
+      })),
+    });
+  });
+  imtp.forEach((s, si) => {
+    sessions.push({
+      athleteId: athlete.id, testType: "imtp", sessionDate: s.date, deviceId,
+      trials: [0, 1].map((ti) => ({
+        trialNumber: ti + 1,
+        waveform: generateImtpTrace({
+          massKg: athlete.massKg,
+          peakNetForceN: s.peakNet + (ti - 0.5) * 30,
+          riseTau: s.tau,
+          leftShare: s.leftShare,
+          seed: seedBase + 5000 + si * 10 + ti,
+        }),
+      })),
+    });
+  });
+  dj.forEach((s, si) => {
+    sessions.push({
+      athleteId: athlete.id, testType: "drop_jump", sessionDate: s.date, deviceId,
+      trials: [0, 1].map((ti) => ({
+        trialNumber: ti + 1,
+        waveform: generateDjTrace({
+          massKg: athlete.massKg,
+          contactTimeS: s.contact + (ti - 0.5) * 0.008,
+          flightTimeS: s.flight + (ti - 0.5) * 0.01,
+          seed: seedBase + 9000 + si * 10 + ti,
+        }),
+      })),
+    });
+  });
+  sessions.sort((a, b) => a.sessionDate.localeCompare(b.sessionDate));
+  return { sessions };
+}
+
+function runSynthetic(athlete: AthleteSpec, input: SyntheticInput, facilityId = RPI, sourceId = srcSynthetic) {
+  const result = runImportBatch(syntheticSignalAdapter, input, facilityId, sourceId, `${athlete.name} force-plate history`);
+  if (result.status !== "complete") {
+    console.error(`Seed batch FAILED for ${athlete.name}:`, result.validation.errors);
+    process.exitCode = 1;
+  } else {
+    console.log(
+      `${athlete.name}: ${result.sessionIds.length} sessions, ${result.metricCount} metrics, ${result.findingsGenerated} findings` +
+      (result.failedTrials.length ? `, ${result.failedTrials.length} unscoreable trials` : "")
+    );
+  }
+}
+
+/* Maya — flagship: pre-injury baseline, gap, graded return */
+{
+  const cmj: CmjSessionSpec[] = [];
+  const rand = rng(101);
+  // pre-injury: 2025-09-01 → 2026-01-10, ~2x/week
+  let d = "2025-09-01";
+  while (d <= "2026-01-10") {
+    cmj.push({ date: d, v: 2.55 + (rand() - 0.5) * 0.06, depth: 1.0 + (rand() - 0.5) * 0.06, leftShare: 0.5 + (rand() - 0.5) * 0.01 });
+    d = addDays(d, 3 + Math.round(rand()));
+  }
+  // post-surgery return: 2026-03-09 → today, weekly; output and left-side share recover gradually
+  let week = 0;
+  d = "2026-03-09";
+  while (d <= TODAY) {
+    const progress = Math.min(1, week / 17);
+    cmj.push({
+      date: d,
+      v: 2.1 + 0.26 * progress + (rand() - 0.5) * 0.04,
+      depth: 1.18 - 0.13 * progress + (rand() - 0.5) * 0.04, // deeper, force-reliant strategy early on
+      leftShare: 0.455 + 0.033 * progress + (rand() - 0.5) * 0.006,
+    });
+    d = addDays(d, 7);
+    week++;
+  }
+
+  const imtp: ImtpSessionSpec[] = [];
+  d = "2025-09-08";
+  let i = 0;
+  while (d <= "2026-01-05") {
+    imtp.push({ date: d, peakNet: 1750 + (rand() - 0.5) * 80, tau: 0.16, leftShare: 0.5 + (rand() - 0.5) * 0.008 });
+    d = addDays(d, 14);
+    i++;
+  }
+  d = "2026-03-16";
+  i = 0;
+  while (d <= TODAY) {
+    const progress = Math.min(1, i / 8);
+    imtp.push({ date: d, peakNet: 1280 + 340 * progress + (rand() - 0.5) * 60, tau: 0.2 - 0.035 * progress, leftShare: 0.446 + 0.036 * progress });
+    d = addDays(d, 14);
+    i++;
+  }
+
+  const dj: DjSessionSpec[] = [];
+  for (const dd of ["2025-10-06", "2025-11-03", "2025-12-01", "2026-01-05"]) {
+    dj.push({ date: dd, contact: 0.205 + (rand() - 0.5) * 0.01, flight: 0.5 + (rand() - 0.5) * 0.015 });
+  }
+  let djDate = "2026-05-11";
+  let j = 0;
+  while (djDate <= TODAY) {
+    const progress = Math.min(1, j / 4);
+    dj.push({ date: djDate, contact: 0.245 - 0.025 * progress, flight: 0.46 + 0.045 * progress });
+    djDate = addDays(djDate, 14);
+    j++;
+  }
+
+  runSynthetic(maya, buildSyntheticInput(maya, cmj, imtp, dj, rpiPlate, 100000));
+}
+
+/* Tessa — stable baseline then 2 consecutive low sessions (deviation + training context) */
+{
+  const rand = rng(202);
+  const cmj: CmjSessionSpec[] = [];
+  let d = "2026-03-02";
+  let n = 0;
+  while (n < 24) {
+    cmj.push({ date: d, v: 2.5 + (rand() - 0.5) * 0.05, depth: 1.0 + (rand() - 0.5) * 0.05, leftShare: 0.5 + (rand() - 0.5) * 0.012 });
+    d = addDays(d, 5);
+    n++;
+  }
+  // two flagged sessions after the heavy block: 2026-07-03 and 2026-07-07
+  cmj.push({ date: "2026-07-03", v: 2.32, depth: 1.08, leftShare: 0.5 });
+  cmj.push({ date: "2026-07-07", v: 2.3, depth: 1.1, leftShare: 0.5 });
+  runSynthetic(tessa, buildSyntheticInput(tessa, cmj, [], [], rpiPlate, 200000));
+}
+
+/* Dario — braking asymmetry emerges while output stays stable */
+{
+  const rand = rng(303);
+  const cmj: CmjSessionSpec[] = [];
+  let d = "2026-02-02";
+  for (let n = 0; n < 20; n++) {
+    cmj.push({ date: d, v: 2.62 + (rand() - 0.5) * 0.05, depth: 0.98, leftShare: 0.5 + (rand() - 0.5) * 0.01 });
+    d = addDays(d, 6);
+  }
+  // drift over the last 6 sessions
+  for (let n = 0; n < 6; n++) {
+    cmj.push({ date: d, v: 2.6 + (rand() - 0.5) * 0.05, depth: 0.98, leftShare: 0.5 - 0.0022 * (n + 1) });
+    d = addDays(d, 6);
+  }
+  const imtp: ImtpSessionSpec[] = [];
+  let di = "2026-02-09";
+  for (let n = 0; n < 10; n++) {
+    imtp.push({ date: di, peakNet: 2450 + (rand() - 0.5) * 90, tau: 0.15, leftShare: 0.5 + (rand() - 0.5) * 0.01 });
+    di = addDays(di, 15);
+  }
+  runSynthetic(dario, buildSyntheticInput(dario, cmj, imtp, [], rpiPlate, 300000));
+}
+
+/* Malik — solid history but stale (last test >1 month ago) */
+{
+  const rand = rng(404);
+  const cmj: CmjSessionSpec[] = [];
+  let d = "2026-01-05";
+  for (let n = 0; n < 22; n++) {
+    cmj.push({ date: d, v: 2.7 + (rand() - 0.5) * 0.06, depth: 1.05, leftShare: 0.5 + (rand() - 0.5) * 0.012 });
+    d = addDays(d, 6);
+  }
+  runSynthetic(malik, buildSyntheticInput(malik, cmj, [], [], rpiPlate, 400000));
+}
+
+/* Elena — healthy, current, unremarkable */
+{
+  const rand = rng(505);
+  const cmj: CmjSessionSpec[] = [];
+  let d = "2026-02-16";
+  for (let n = 0; n < 20; n++) {
+    cmj.push({ date: d, v: 2.48 + (rand() - 0.5) * 0.045, depth: 1.0, leftShare: 0.5 + (rand() - 0.5) * 0.01 });
+    d = addDays(d, 7);
+  }
+  const dj: DjSessionSpec[] = [
+    { date: "2026-06-15", contact: 0.215, flight: 0.48 },
+    { date: "2026-07-06", contact: 0.21, flight: 0.49 },
+  ];
+  runSynthetic(elena, buildSyntheticInput(elena, cmj, [], dj, rpiPlate, 500000));
+}
+
+/* Sofia — new athlete, only 4 sessions (baseline not yet established) */
+{
+  const rand = rng(606);
+  const cmj: CmjSessionSpec[] = [];
+  let d = "2026-06-15";
+  for (let n = 0; n < 4; n++) {
+    cmj.push({ date: d, v: 2.4 + (rand() - 0.5) * 0.05, depth: 1.0, leftShare: 0.5 });
+    d = addDays(d, 7);
+  }
+  runSynthetic(sofia, buildSyntheticInput(sofia, cmj, [], [], rpiPlate, 600000));
+}
+
+/* Harbor City FC — separate facility, proves scoping */
+{
+  for (const [athlete, seedBase] of [[kofi, 700000], [lucas, 800000]] as const) {
+    const rand = rng(seedBase);
+    const cmj: CmjSessionSpec[] = [];
+    let d = "2026-04-06";
+    for (let n = 0; n < 12; n++) {
+      cmj.push({ date: d, v: 2.58 + (rand() - 0.5) * 0.05, depth: 1.0, leftShare: 0.5 + (rand() - 0.5) * 0.012 });
+      d = addDays(d, 7);
+    }
+    const input = buildSyntheticInput(athlete, cmj, [], [], hcfcPlate, seedBase);
+    const result = runImportBatch(syntheticSignalAdapter, input, HCFC, srcSyntheticHc, `${athlete.name} force-plate history`);
+    console.log(`${athlete.name} (Harbor City): ${result.status}, ${result.metricCount} metrics`);
+  }
+}
+
+/* ---------------- CSV import: Jonas IMTP sided values ---------------- */
+
+{
+  const rows: string[] = ["athlete_id,test_type,session_date,metric_type,side,value"];
+  const rand = rng(909);
+  let d = "2026-05-04";
+  for (let n = 0; n < 6; n++) {
+    const right = 3150 + (rand() - 0.5) * 100;
+    const ratio = 0.94 - n * 0.012; // asymmetry grows toward ~12%
+    const left = right * ratio;
+    rows.push(`${jonas.id},imtp,${d},imtp_peak_force,left,${left.toFixed(0)}`);
+    rows.push(`${jonas.id},imtp,${d},imtp_peak_force,right,${right.toFixed(0)}`);
+    rows.push(`${jonas.id},imtp,${d},imtp_peak_force,bilateral,${(left + right).toFixed(0)}`);
+    rows.push(`${jonas.id},imtp,${d},imtp_relative_force,bilateral,${((left + right) / 88).toFixed(2)}`);
+    d = addDays(d, 12);
+  }
+  const result = runImportBatch(
+    csvGenericAdapter,
+    { filename: "jonas_imtp_export.csv", content: rows.join("\n") },
+    RPI, srcCsv, "jonas_imtp_export.csv"
+  );
+  console.log(`CSV import (Jonas): ${result.status}, ${result.metricCount} metrics, ${result.findingsGenerated} findings`);
+}
+
+/* ---------------- Demo dataset import: Priya (metric-only, no sides) ---------------- */
+
+{
+  const rand = rng(808);
+  const dataset: { athleteId: string; testType: string; sessionDate: string; values: { metricType: string; value: number }[] }[] = [];
+  let d = "2026-04-01";
+  for (let n = 0; n < 10; n++) {
+    dataset.push({
+      athleteId: priya.id, testType: "cmj", sessionDate: d,
+      values: [
+        { metricType: "cmj_jump_height", value: Math.round((36 + (rand() - 0.5) * 2.4) * 10) / 10 },
+        { metricType: "cmj_mrsi", value: Math.round((0.52 + (rand() - 0.5) * 0.05) * 100) / 100 },
+      ],
+    });
+    d = addDays(d, 10);
+  }
+  const result = runImportBatch(demoDatasetAdapter, { dataset }, RPI, srcDemo, "public demo dataset (jump testing)");
+  console.log(`Demo dataset (Priya): ${result.status}, ${result.metricCount} metrics`);
+}
+
+/* ---------------- Manual entry: Elena drop-jump RSI session ---------------- */
+
+{
+  const result = runImportBatch(
+    manualEntryAdapter,
+    {
+      athleteId: elena.id, testType: "drop_jump", sessionDate: "2026-07-08",
+      notes: "Stopwatch/contact-mat session — plates in use.",
+      metrics: [{ metricType: "dj_rsi", side: "bilateral" as const, value: 2.21 }],
+    },
+    RPI, srcManual, "manual entry — Elena Brooks DJ"
+  );
+  console.log(`Manual entry (Elena): ${result.status}, ${result.metricCount} metrics`);
+}
+
+/* ---------------- summary ---------------- */
+
+const counts = (table: string) =>
+  (db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get() as { c: number }).c;
+console.log("\nSeed complete:");
+for (const t of ["facility", "athlete", "session", "trial", "metric", "finding", "import_batch", "training_session", "velocity_rep"]) {
+  console.log(`  ${t}: ${counts(t)}`);
+}

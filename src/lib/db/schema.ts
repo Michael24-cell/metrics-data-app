@@ -1,0 +1,276 @@
+/**
+ * V1 canonical schema. SQLite via node:sqlite.
+ *
+ * Scoping rule: every row that describes an athlete's data carries facility_id.
+ * The DAL requires a facilityId argument on every read/write — there is no
+ * unscoped query path for athlete data.
+ */
+
+export const SCHEMA_SQL = `
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS facility (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  short_name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS athlete (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  display_name TEXT NOT NULL,
+  sport TEXT NOT NULL,
+  position TEXT,
+  team TEXT,
+  sex TEXT,
+  birth_year INTEGER,
+  height_cm REAL,
+  mass_kg REAL,
+  status TEXT NOT NULL DEFAULT 'active',        -- active | rts | inactive
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_athlete_facility ON athlete(facility_id);
+
+CREATE TABLE IF NOT EXISTS device (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  device_type TEXT NOT NULL,                     -- config-driven key
+  make TEXT,
+  model TEXT,
+  sampling_hz INTEGER,
+  last_calibrated_at TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS data_source (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  adapter_key TEXT NOT NULL,                     -- synthetic_signal | csv_generic | manual_entry | demo_dataset | vendor stubs
+  label TEXT NOT NULL,
+  kind TEXT NOT NULL,                            -- operational | stub
+  config_json TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS import_batch (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  data_source_id TEXT NOT NULL REFERENCES data_source(id),
+  status TEXT NOT NULL,                          -- pending | inspected | validated | imported | computed | complete | failed
+  filename TEXT,
+  row_count INTEGER,
+  error_json TEXT,
+  summary_json TEXT,
+  created_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_batch_facility ON import_batch(facility_id);
+
+CREATE TABLE IF NOT EXISTS permission_record (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  scope TEXT NOT NULL,                           -- performance_monitoring | report_sharing | demo_display
+  granted_by TEXT NOT NULL,                      -- role of granting person
+  granted_at TEXT NOT NULL,
+  revoked_at TEXT,
+  notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS session (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  device_id TEXT REFERENCES device(id),
+  import_batch_id TEXT REFERENCES import_batch(id),
+  test_type TEXT NOT NULL,                       -- config-driven key
+  session_date TEXT NOT NULL,                    -- ISO date
+  notes TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_facility_athlete ON session(facility_id, athlete_id, session_date);
+
+CREATE TABLE IF NOT EXISTS trial (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  session_id TEXT NOT NULL REFERENCES session(id),
+  trial_number INTEGER NOT NULL,
+  raw_meta_json TEXT,                            -- adapter-specific raw metadata
+  waveform_json TEXT,                            -- downsampled display waveform {hz, force, left?, right?}
+  quality_flag TEXT,                             -- null | warning text
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trial_session ON trial(session_id);
+
+CREATE TABLE IF NOT EXISTS metric (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  session_id TEXT NOT NULL REFERENCES session(id),
+  trial_id TEXT REFERENCES trial(id),            -- null for session-level / derived metrics
+  metric_type TEXT NOT NULL,                     -- key into metric registry
+  side TEXT NOT NULL DEFAULT 'bilateral',        -- left | right | bilateral
+  value REAL NOT NULL,
+  unit TEXT NOT NULL,
+  method_version TEXT NOT NULL,
+  quality_flag TEXT,                             -- null | sanity-range or trial warning
+  source TEXT NOT NULL DEFAULT 'computed',       -- computed | imported | manual
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_metric_lookup ON metric(facility_id, athlete_id, metric_type, side);
+CREATE INDEX IF NOT EXISTS idx_metric_session ON metric(session_id);
+
+CREATE TABLE IF NOT EXISTS threshold_setting (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  key TEXT NOT NULL,                             -- e.g. asymmetry_watch_pct, asymmetry_flag_pct
+  metric_type TEXT,                              -- null = applies to all
+  value REAL NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  set_by TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS injury_record (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  label TEXT NOT NULL,                           -- practitioner-entered description
+  involved_side TEXT,                            -- left | right | null
+  occurred_on TEXT NOT NULL,
+  resolved_on TEXT,
+  entered_by TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rts_protocol (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  injury_record_id TEXT REFERENCES injury_record(id),
+  name TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'active',         -- active | completed | archived
+  defined_by TEXT NOT NULL,                      -- practitioner name/role
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rts_stage (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  protocol_id TEXT NOT NULL REFERENCES rts_protocol(id),
+  stage_number INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  criteria_json TEXT NOT NULL,                   -- [{id,label,metric_type,side?,kind:'lsi'|'absolute'|'baseline_pct',operator,target,unit}]
+  status TEXT NOT NULL DEFAULT 'pending',        -- pending | current | completed (set by practitioner, not auto)
+  entered_on TEXT,
+  completed_on TEXT
+);
+
+CREATE TABLE IF NOT EXISTS clinical_assessment (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  assessed_on TEXT NOT NULL,
+  assessor TEXT NOT NULL,
+  category TEXT NOT NULL,                        -- e.g. clearance_note | subjective_readiness | screening
+  summary TEXT NOT NULL,                         -- human-authored, displayed verbatim
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS finding (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  category TEXT NOT NULL,                        -- baseline_deviation | rts_stage_status | asymmetry_flag | training_context_note | data_gap
+  severity TEXT NOT NULL,                        -- info | watch | flag
+  headline TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  refs_json TEXT NOT NULL,                       -- {metricIds, sessionIds, metricType, methodVersion, thresholdKey/Version, protocolId/Version, stageId, annotates?}
+  session_date TEXT,                             -- date the finding refers to
+  generated_at TEXT NOT NULL,
+  engine_version TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_finding_facility_athlete ON finding(facility_id, athlete_id);
+
+CREATE TABLE IF NOT EXISTS training_session (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  session_date TEXT NOT NULL,
+  session_type TEXT NOT NULL,                    -- strength | speed | conditioning | practice | rehab
+  duration_min INTEGER,
+  rpe REAL,                                      -- session RPE 0-10
+  load_au REAL,                                  -- duration × RPE (arbitrary units)
+  notes TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_training_facility_athlete ON training_session(facility_id, athlete_id, session_date);
+
+CREATE TABLE IF NOT EXISTS exercise_set (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  training_session_id TEXT NOT NULL REFERENCES training_session(id),
+  exercise TEXT NOT NULL,
+  set_number INTEGER NOT NULL,
+  load_kg REAL,
+  reps INTEGER,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS velocity_rep (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  exercise_set_id TEXT NOT NULL REFERENCES exercise_set(id),
+  rep_number INTEGER NOT NULL,
+  mean_velocity_ms REAL NOT NULL,
+  peak_velocity_ms REAL,
+  method_version TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS load_velocity_profile (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  exercise TEXT NOT NULL,
+  slope REAL NOT NULL,
+  intercept REAL NOT NULL,
+  r2 REAL NOT NULL,
+  n_points INTEGER NOT NULL,
+  method_version TEXT NOT NULL,                  -- 0.1.0-provisional
+  provisional INTEGER NOT NULL DEFAULT 1,
+  fitted_on TEXT NOT NULL,
+  points_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS milestone (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  milestone_date TEXT NOT NULL,
+  label TEXT NOT NULL,
+  kind TEXT NOT NULL,                            -- injury | surgery | stage_change | benchmark | note
+  created_at TEXT NOT NULL
+);
+
+-- Future-ready only: no ingestion, no findings, no correlation logic in V1.
+CREATE TABLE IF NOT EXISTS external_test_result (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  test_name TEXT NOT NULL,
+  test_date TEXT NOT NULL,
+  value REAL,
+  unit TEXT,
+  source_label TEXT,
+  raw_json TEXT,
+  created_at TEXT NOT NULL
+);
+`;
