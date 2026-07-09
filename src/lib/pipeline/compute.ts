@@ -11,6 +11,7 @@ import { computeImtp } from "../calc/imtp";
 import { asymmetryIndex, ASYM_METHOD_VERSION } from "../calc/asymmetry";
 import { metricDef, ASYMMETRY_SOURCE_METRICS } from "../config/metrics";
 import { checkSanity } from "../calc/signal";
+import { isValidSide, VALID_SIDES } from "./adapter";
 
 export interface MetricInsert {
   metricType: string;
@@ -28,6 +29,15 @@ export function insertMetric(
   sessionId: string,
   m: MetricInsert
 ): string {
+  // Defense in depth: validateCanonical() already rejects invalid side/value
+  // for every import path, but this guarantees no caller can ever write
+  // unscoped/invalid data to the metric table, even if it bypasses validation.
+  if (!isValidSide(m.side)) {
+    throw new Error(`Refusing to write invalid side '${m.side}' for metric '${m.metricType}' — must be one of ${VALID_SIDES.join(", ")}.`);
+  }
+  if (!Number.isFinite(m.value)) {
+    throw new Error(`Refusing to write non-finite value for metric '${m.metricType}'.`);
+  }
   const def = metricDef(m.metricType);
   const sanity = checkSanity(m.value, def.sanity.min, def.sanity.max);
   const quality = m.qualityFlag ?? (sanity.ok ? null : `sanity: ${sanity.reason}`);

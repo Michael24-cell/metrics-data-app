@@ -78,6 +78,7 @@ export default async function ProgressPage({ params }: { params: Promise<{ id: s
           precision={1}
           band={baseline.points.map((p) => ({ date: p.date, low: p.bandLow, high: p.bandHigh }))}
           baselineMean={baseline.baselineMean}
+          thresholdLines={jump.thresholds}
           milestones={milestones}
           height={260}
         />

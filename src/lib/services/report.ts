@@ -3,7 +3,14 @@
  * data + findings the dashboard reads — no separate calculation path.
  */
 
-import { athleteDetail, metricTrend, asymmetryTrend, baselineSeries, findingsWithAnnotations } from "./queries";
+import {
+  athleteDetail,
+  metricTrend,
+  metricThresholdLines,
+  asymmetryTrend,
+  baselineSeries,
+  findingsWithAnnotations,
+} from "./queries";
 import { getFacility, sessionBestSeries } from "../db/dal";
 import { METRICS } from "../config/metrics";
 import { FINDINGS_ENGINE_VERSION } from "../findings/engine";
@@ -23,6 +30,7 @@ export function buildReport(facilityId: string, athleteId: string, range: { from
     key: k,
     def: METRICS[k],
     points: sessionBestSeries(facilityId, athleteId, k, "bilateral", range),
+    thresholds: metricThresholdLines(facilityId, k),
   }));
   const asym = asymmetryTrend(facilityId, athleteId, "cmj_ecc_braking_impulse", range);
   const asymImtp = asymmetryTrend(facilityId, athleteId, "imtp_peak_force", range);

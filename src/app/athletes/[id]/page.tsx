@@ -166,6 +166,7 @@ export default async function AthletePage({
           precision={def.precision}
           band={baseline?.points.map((p) => ({ date: p.date, low: p.bandLow, high: p.bandHigh }))}
           baselineMean={baseline?.baselineMean}
+          thresholdLines={trend.thresholds}
           milestones={milestones}
           flaggedDates={flaggedDates}
           sessionLinkBase="/sessions"
@@ -243,6 +244,7 @@ export default async function AthletePage({
                 label={d.shortLabel}
                 unit={d.unit}
                 precision={d.precision}
+                thresholdLines={t.thresholds}
                 height={170}
                 interpretation={d.interpretation}
               />

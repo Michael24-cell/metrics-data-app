@@ -72,6 +72,7 @@ export default async function StoryPage() {
           precision={1}
           band={baseline.points.map((p) => ({ date: p.date, low: p.bandLow, high: p.bandHigh }))}
           baselineMean={baseline.baselineMean}
+          thresholdLines={jump.thresholds}
           milestones={detail.milestones}
           flaggedDates={baseline.points.filter((p) => p.flag !== "none").map((p) => p.date)}
           height={260}
@@ -103,6 +104,7 @@ export default async function StoryPage() {
           label="mRSI"
           unit="m/s"
           precision={2}
+          thresholdLines={mrsi.thresholds}
           milestones={detail.milestones.filter((m) => m.kind !== "benchmark")}
           height={220}
           interpretation={METRICS.cmj_mrsi.interpretation}

@@ -90,16 +90,44 @@ export interface TrendPoint {
   value: number;
 }
 
+export interface MetricThresholdLine {
+  value: number;
+  label: string;
+  tone?: "watch" | "alert" | "ok";
+}
+
+/**
+ * Facility-configured reference lines for one metric_type, read from
+ * threshold_setting. Purely config-driven: returns [] when the facility has
+ * nothing configured for this metric, so callers never need metric-specific
+ * logic and TrendChart never needs to know what a metric_type is.
+ */
+export function metricThresholdLines(facilityId: string, metricType: string): MetricThresholdLine[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT key, value FROM threshold_setting
+       WHERE facility_id = ? AND metric_type = ? AND active = 1
+       ORDER BY key`
+    )
+    .all(facilityId, metricType) as { key: string; value: number }[];
+  return rows.map((r) => ({
+    value: r.value,
+    label: r.key.replace(/_/g, " "),
+    tone: "watch" as const,
+  }));
+}
+
 export function metricTrend(
   facilityId: string,
   athleteId: string,
   metricType: string,
   side = "bilateral",
   range: { from?: string; to?: string } = {}
-): { def: (typeof METRICS)[string]; points: TrendPoint[] } {
+): { def: (typeof METRICS)[string]; points: TrendPoint[]; thresholds: MetricThresholdLine[] } {
   return {
     def: metricDef(metricType),
     points: sessionBestSeries(facilityId, athleteId, metricType, side, range),
+    thresholds: metricThresholdLines(facilityId, metricType),
   };
 }
 

@@ -9,6 +9,14 @@
 
 import { ForceTimeSeries } from "../calc/signal";
 
+/** The only side values the platform accepts anywhere metric data is written. */
+export const VALID_SIDES = ["left", "right", "bilateral"] as const;
+export type Side = (typeof VALID_SIDES)[number];
+
+export function isValidSide(value: string): value is Side {
+  return (VALID_SIDES as readonly string[]).includes(value);
+}
+
 export interface InspectReport {
   adapterKey: string;
   ok: boolean;

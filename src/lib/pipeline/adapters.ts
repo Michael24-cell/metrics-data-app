@@ -14,8 +14,10 @@ import {
   ComputeResult,
   ImportResult,
   InspectReport,
+  isValidSide,
   OutputsResult,
   ValidationResult,
+  VALID_SIDES,
 } from "./adapter";
 import { computeTrialMetrics, computeSessionAsymmetry, insertMetric } from "./compute";
 import { downsample } from "../calc/synthetic";
@@ -41,8 +43,18 @@ export function validateCanonical(payload: CanonicalPayload, facilityId: string)
         errors.push(`Trial ${t.trialNumber} (${s.sessionDate}) has neither waveform nor metric values.`);
       }
       for (const m of t.metrics ?? []) {
-        if (!METRICS[m.metricType]) errors.push(`Unknown metric_type '${m.metricType}'.`);
-        else {
+        if (!isValidSide(m.side)) {
+          errors.push(
+            `Invalid side '${m.side}' for ${m.metricType} on ${s.sessionDate} (trial ${t.trialNumber}) — must be one of ${VALID_SIDES.join(", ")}.`
+          );
+        }
+        if (!METRICS[m.metricType]) {
+          errors.push(`Unknown metric_type '${m.metricType}'.`);
+        } else if (!Number.isFinite(m.value)) {
+          errors.push(
+            `Non-numeric or missing value for ${m.metricType} on ${s.sessionDate} (trial ${t.trialNumber}).`
+          );
+        } else {
           const def = metricDef(m.metricType);
           if (m.value < def.sanity.min || m.value > def.sanity.max) {
             warnings.push(
@@ -292,11 +304,16 @@ export const csvGenericAdapter: Adapter<CsvInput> = {
           trials: [{ trialNumber: 1, metrics: [] }],
         });
       }
-      const side = idx.side >= 0 && r[idx.side] ? r[idx.side] : "bilateral";
+      // side column is optional (absent → bilateral); if present, the cell is
+      // taken as-is (including blank) so validation can catch bad/missing
+      // values instead of a default silently masking them.
+      const side = idx.side >= 0 ? r[idx.side] ?? "" : "bilateral";
+      const rawValue = r[idx.value];
+      const value = rawValue == null || rawValue.trim() === "" ? NaN : Number(rawValue);
       sessions.get(key)!.trials[0].metrics!.push({
         metricType: r[idx.metric],
         side: side as "left" | "right" | "bilateral",
-        value: Number(r[idx.value]),
+        value,
       });
     }
     return { sessions: [...sessions.values()] };

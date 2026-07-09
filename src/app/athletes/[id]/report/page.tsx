@@ -116,17 +116,18 @@ export default async function ReportPage({
           precision={charts.jump.def.precision}
           band={charts.baseline.points.map((p) => ({ date: p.date, low: p.bandLow, high: p.bandHigh }))}
           baselineMean={charts.baseline.baselineMean}
+          thresholdLines={charts.jump.thresholds}
           milestones={milestones}
           flaggedDates={charts.baseline.points.filter((p) => p.flag !== "none").map((p) => p.date)}
           height={240}
         />
         <div className="grid2" style={{ marginTop: 14 }}>
-          <TrendChart points={charts.mrsi.points} label={charts.mrsi.def.shortLabel} unit={charts.mrsi.def.unit} precision={2} height={180} interpretation={charts.mrsi.def.interpretation} />
-          <TrendChart points={charts.imtpRel.points} label={charts.imtpRel.def.shortLabel} unit={charts.imtpRel.def.unit} precision={2} height={180} />
+          <TrendChart points={charts.mrsi.points} label={charts.mrsi.def.shortLabel} unit={charts.mrsi.def.unit} precision={2} thresholdLines={charts.mrsi.thresholds} height={180} interpretation={charts.mrsi.def.interpretation} />
+          <TrendChart points={charts.imtpRel.points} label={charts.imtpRel.def.shortLabel} unit={charts.imtpRel.def.unit} precision={2} thresholdLines={charts.imtpRel.thresholds} height={180} />
         </div>
         <div className="grid3" style={{ marginTop: 14 }}>
           {charts.rfdSeries.map((r) => (
-            <TrendChart key={r.key} points={r.points} label={r.def.shortLabel} unit={r.def.unit} precision={0} height={150} interpretation={r.def.interpretation} />
+            <TrendChart key={r.key} points={r.points} label={r.def.shortLabel} unit={r.def.unit} precision={0} thresholdLines={r.thresholds} height={150} interpretation={r.def.interpretation} />
           ))}
         </div>
       </div>
