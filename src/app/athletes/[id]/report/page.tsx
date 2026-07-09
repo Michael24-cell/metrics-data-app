@@ -163,8 +163,10 @@ export default async function ReportPage({
         <div className="panel report-section">
           <h2>Criteria status — {protocol.name} · Stage {currentStage.stage_number}: {currentStage.name}</h2>
           <p className="panel-sub">
-            Practitioner-defined targets with measured evidence. Status is shown per criterion — this report
-            does not aggregate them into a readiness verdict.
+            <strong style={{ color: "var(--watch)" }}>Illustrative demo protocol</strong> — this stage/criteria
+            set is placeholder content built to demonstrate the platform, not a verified real clinical protocol
+            for any real athlete. Practitioner-defined targets with measured evidence. Status is shown per
+            criterion — this report does not aggregate them into a readiness verdict.
           </p>
           <StageCriteria criteria={stageRefs.criteria} />
         </div>

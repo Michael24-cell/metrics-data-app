@@ -13,6 +13,12 @@ npm test          # 24 deterministic calculation-engine tests
 
 Requires Node ≥ 22.5 (uses the built-in `node:sqlite`).
 
+## Controlled demo mode — no authentication
+
+This build has **no user login, no session identity, and no role-based access control**. Facility scoping is enforced at every database query (see `src/lib/db/dal.ts`), but *which* facility a visitor is scoped to is chosen by an unauthenticated cookie, guarded only by a confirmation interstitial (`src/app/api/facility/route.ts`) — a bare link can no longer silently switch facilities, but there is no login preventing anyone with the URL from doing so deliberately. A warning banner is shown on every page for the same reason.
+
+**Until real authentication is built, this app should only be shown by the founder, in a setting they control (screen-shared or on their own machine) — never deployed as a self-serve public link.** Treat every current facility/athlete as demo or synthetic content; see `docs/DATA_GOVERNANCE.md`.
+
 ## The working loop
 
 seed/demo/manual data → canonical schema → versioned metric calculations → deterministic findings → dashboards → practitioner report. Same data layer end to end; the report cannot disagree with the dashboard.

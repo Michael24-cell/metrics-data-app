@@ -58,6 +58,17 @@ button { font-family: inherit; }
 
 /* ---------- app chrome ---------- */
 
+.demo-banner {
+  background: rgba(227, 185, 79, 0.1);
+  border-bottom: 1px solid rgba(227, 185, 79, 0.35);
+  color: var(--watch);
+  font-size: 12px;
+  text-align: center;
+  padding: 7px 16px;
+  line-height: 1.5;
+}
+.demo-banner strong { color: var(--ink); }
+
 .appbar {
   display: flex;
   align-items: center;

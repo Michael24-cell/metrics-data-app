@@ -47,12 +47,17 @@ export default async function StoryPage() {
         </div>
       </div>
 
-      <div className="callout" style={{ marginBottom: 18 }}>
-        <strong style={{ color: "var(--ink)" }}>About this story:</strong> “{flagship.display_name}” is a
-        demo identity with synthetic force-plate signals. Structure and calculations are real; the person is
-        not. A production case study would require the athlete&apos;s written consent (a permission record
-        with scope <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>demo_display</code>, as
-        modeled here).
+      <div className="callout" data-tone="error" style={{ marginBottom: 18 }}>
+        <strong style={{ color: "var(--ink)" }}>This is placeholder demo content, not a real case study.</strong>{" "}
+        “{flagship.display_name}” is an invented, anonymized demo identity with entirely synthetic
+        force-plate signals — there is no real athlete, no real injury, and no real recovery behind this page.
+        The schema, calculations, and Findings shown are the platform&apos;s real engine; the person, story, and
+        clinical details are not. Any future real case study — including a real anchor-athlete recovery
+        narrative — would only appear here after that athlete&apos;s own explicit written consent (a
+        permission record with scope{" "}
+        <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>demo_display</code>, as modeled here),
+        with their own words, their own photos (never fabricated), and never presented as, or adjacent to, a
+        clinical claim.
       </div>
 
       <div className="panel">

@@ -454,7 +454,7 @@ function rtsFindings(facilityId: string, athleteId: string): number {
     category: "rts_stage_status",
     severity: "info",
     headline: `Stage ${current.stage_number} (“${current.name}”): ${metCount} of ${total} practitioner-defined criteria currently met${contextCount > 0 ? ` (+${contextCount} item${contextCount === 1 ? "" : "s"} documented by the clinical/performance team, tracked separately)` : ""}`,
-    detail: `Criteria status for ${protocol.name} (v${protocol.version}), defined by ${protocol.defined_by}. This is measured evidence against practitioner-set targets — stage progression and return decisions remain with the clinical and performance team.${
+    detail: `ILLUSTRATIVE DEMO PROTOCOL — this stage/criteria set is placeholder content built to demonstrate the platform's capability, not a verified real clinical protocol for any real athlete. Criteria status for ${protocol.name} (v${protocol.version}), defined by ${protocol.defined_by}. This is measured evidence against practitioner-set targets — stage progression and return decisions remain with the clinical and performance team.${
       pendingData > 0 ? ` ${pendingData} criteri${pendingData === 1 ? "on" : "a"} lack sufficient data and are shown as “insufficient data”, not as met.` : ""
     }${
       contextCount > 0 ? ` ${contextCount} additional criteri${contextCount === 1 ? "on is" : "a are"} practitioner-attested (e.g. range of motion, pain/swelling, tests this platform does not compute) and ${contextCount === 1 ? "is" : "are"} shown as documented separately, not evaluated here.` : ""

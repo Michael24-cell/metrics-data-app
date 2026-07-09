@@ -85,6 +85,8 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
 
       {trials.map((t) => {
         const trialMetrics = byTrial.get(t.id) ?? [];
+        const rfdKeys = ["imtp_rfd_0_50", "imtp_rfd_50_150", "imtp_rfd_150_250"] as const;
+        const rfdPresent = rfdKeys.filter((k) => trialMetrics.some((m) => m.metric_type === k));
         const waveform = t.waveform_json
           ? (JSON.parse(t.waveform_json) as { hz: number; force: number[]; left?: number[]; right?: number[] })
           : null;
@@ -132,6 +134,16 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
                   ))}
                 </tbody>
               </table>
+            )}
+            {rfdPresent.length > 0 && (
+              <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                {rfdPresent.map((k) => (
+                  <div key={k} className="interpret-note">
+                    <strong style={{ color: "var(--ink)" }}>{METRICS[k].shortLabel}: </strong>
+                    {METRICS[k].interpretation}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         );

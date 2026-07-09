@@ -22,6 +22,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="en" className={`${body.variable} ${display.variable} ${mono.variable}`}>
       <body>
+        <div className="demo-banner" role="note">
+          <strong>Controlled demo</strong> — no user authentication is implemented. Intended for
+          founder-led demos only; do not share this link or leave a session unattended.
+        </div>
         <header className="appbar">
           <a href="/" className="brand" aria-label="TraceLab home">
             <svg width="26" height="18" viewBox="0 0 26 18" aria-hidden="true">
