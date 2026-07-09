@@ -12,6 +12,22 @@
 
 export const PROFILE_METHOD_VERSION = "0.1.0-provisional";
 
+/**
+ * Planned force–velocity data-collection protocol (not yet implemented —
+ * no adapter or calculation consumes this; it documents what a future
+ * multi-load jump session would need to capture). Loads are percentages of
+ * body weight added to the jump. Keep classification language (e.g.
+ * force-deficient / velocity-deficient) provisional until a validated
+ * reference profile is added — this platform does not derive or display
+ * such classifications today.
+ */
+export const FV_PROFILE_PROTOCOL = {
+  cmjLoadedSeriesPctBW: [0, 10, 20, 30, 40],
+  squatJumpLoadedSeriesPctBW: [0, 20, 40, 60, 80],
+  note:
+    "Planned protocol only. Optimal-power-load and force-velocity profiling require this multi-load series plus a validated reference; neither is implemented in V1.",
+} as const;
+
 export interface LinearFit {
   slope: number;
   intercept: number;
@@ -48,6 +64,23 @@ export interface LoadVelocityProfile {
   provisional: true;
   provisionalNote: string;
 }
+
+/**
+ * Planned VBT / load–velocity data-collection protocol (documentation only —
+ * fitLoadVelocityProfile() below accepts whatever load/velocity pairs it is
+ * given; it does not enforce this protocol). Loads are percentages of 1RM.
+ * The 0.06 m/s progression threshold is deliberately set above the assumed
+ * device standard error so a "velocity improved" reading isn't just noise —
+ * do not lower it to 0.05 m/s without new evidence that the device error is
+ * smaller than assumed.
+ */
+export const LVP_PROTOCOL = {
+  loadsPctOf1RM: [30, 50, 70, 80],
+  repsPerLoad: 3,
+  progressionRule:
+    "Increase load by 5% once mean velocity improves by ≥ 0.06 m/s for two consecutive sessions at the same load.",
+  progressionThresholdMs: 0.06,
+} as const;
 
 export function fitLoadVelocityProfile(
   exercise: string,

@@ -86,7 +86,7 @@ export const METRICS: Record<string, MetricDef> = {
     description:
       "Net impulse absorbed during the braking phase of the countermovement (peak negative velocity → zero velocity).",
     interpretation:
-      "A proxy for deceleration and change-of-direction capacity — the ability to absorb force rapidly. It is a capacity measure, not a movement-quality assessment.",
+      "A force-absorption / deceleration measure relevant to change-of-direction capacity — the ability to absorb force rapidly. It is a capacity measure, not a movement-quality assessment, and not a diagnosis, injury-prediction, or clearance metric.",
     status: "implemented",
   },
   cmj_peak_propulsive_force: {
@@ -161,7 +161,7 @@ export const METRICS: Record<string, MetricDef> = {
     methodVersion: "1.0.0",
     description: "Average rate of force development 50–150 ms after force onset.",
     interpretation:
-      "50–150 ms RFD is largely fiber-type dependent and substantially genetic. Expect it to move less with training than the other windows.",
+      "50–150 ms RFD reflects mid-phase force development. It is influenced by neuromuscular qualities and fiber-type profile, but present this as interpretation, not a fixed ceiling — expect it to respond more slowly to training than the 0–50 ms window, not to be untrainable.",
     status: "implemented",
   },
   imtp_rfd_150_250: {
@@ -192,6 +192,8 @@ export const METRICS: Record<string, MetricDef> = {
     sided: false,
     methodVersion: "1.0.0",
     description: "Flight time divided by ground contact time for a drop jump.",
+    interpretation:
+      "Distinct from CMJ mRSI: RSI here is flight time ÷ ground contact time (a drop-jump measure), while mRSI is jump height ÷ time to takeoff (a countermovement-jump measure). They reflect different jump strategies and should not be collapsed into the same number or compared directly.",
     status: "implemented",
   },
   asymmetry_index: {

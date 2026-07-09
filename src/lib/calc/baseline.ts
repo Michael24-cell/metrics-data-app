@@ -9,9 +9,10 @@
  * - Rolling window: last `rollingWindow` sessions (default 5), recalculated each session.
  * - Normal band: rolling mean ± 1 SD (SD from the rolling window; baseline SD is
  *   used until the rolling window is full).
- * - Flags: 1 session below band → volume autoregulation prompt;
- *   2 consecutive below → mandatory deload flag;
- *   3+ consecutive below → elevated-attention flag (a plain flag — no risk score).
+ * - Flags: 1 session below band → review / autoregulate volume (not intensity);
+ *   2 consecutive below → deload recommendation (mandatory deload flag);
+ *   3+ consecutive below → elevated-attention / review flag (a plain flag —
+ *   no risk multiplier, no injury-probability claim).
  */
 
 import { mean, sd } from "./signal";

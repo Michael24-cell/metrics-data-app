@@ -60,9 +60,12 @@ export interface FindingRefs {
   criteria?: {
     id: string;
     label: string;
-    met: boolean | null; // null = insufficient data
+    met: boolean | null; // null = insufficient data (computed criteria) or n/a (context criteria)
     observed: string;
     target: string;
+    /** "context" = practitioner-attested, not evaluated from platform metric data.
+     *  Undefined/omitted = a normal computed criterion. */
+    kind?: "context";
   }[];
   baseline?: { mean: number; sd: number; window: number };
 }
@@ -140,9 +143,9 @@ function baselineDeviationFindings(facilityId: string, athleteId: string): numbe
       if (p.flag === "none") continue;
       const sevMap = { below_band: "info", mandatory_deload: "watch", elevated_attention: "flag" } as const;
       const labelMap = {
-        below_band: `single session below normal band — volume autoregulation prompt`,
-        mandatory_deload: `2 consecutive sessions below normal band — mandatory deload per monitoring rule`,
-        elevated_attention: `${p.consecutiveBelow} consecutive sessions below normal band — elevated attention`,
+        below_band: `single session below normal band — review / autoregulate volume (not intensity)`,
+        mandatory_deload: `2 consecutive sessions below normal band — deload recommendation per monitoring rule`,
+        elevated_attention: `${p.consecutiveBelow} consecutive sessions below normal band — elevated attention / review flag`,
       } as const;
       const findingId = insertFinding(facilityId, athleteId, {
         category: "baseline_deviation",
@@ -296,11 +299,17 @@ function asymmetryFindings(facilityId: string, athleteId: string): number {
 interface StageCriterion {
   id: string;
   label: string;
-  metric_type: string;
-  kind: "lsi" | "absolute" | "baseline_pct";
-  operator: ">=" | "<=";
-  target: number;
-  unit: string;
+  /** required for computed kinds; unused for "context" */
+  metric_type?: string;
+  /** "context" = practitioner-attested item (e.g. ROM, pain/swelling, a test the
+   *  platform does not compute) — never evaluated against metric data, always
+   *  shown as documented separately, never merged into the met/total count. */
+  kind: "lsi" | "absolute" | "baseline_pct" | "context";
+  operator?: ">=" | "<=";
+  target?: number;
+  unit?: string;
+  /** context kind only: what the evidence table shows under "Observed" */
+  note?: string;
 }
 
 function rtsFindings(facilityId: string, athleteId: string): number {
@@ -320,13 +329,36 @@ function rtsFindings(facilityId: string, athleteId: string): number {
   let latestDate: string | undefined;
 
   for (const c of criteria) {
-    const def = metricDef(c.metric_type);
+    if (c.kind === "context") {
+      // Practitioner-attested item (e.g. ROM, pain/swelling, a test this
+      // platform doesn't compute). Never evaluated from metric data, and
+      // excluded from the met/total count below — it is documented
+      // separately, not "insufficient data" (which implies the platform
+      // tried to compute it).
+      evidence.push({
+        id: c.id,
+        label: c.label,
+        met: null,
+        observed: c.note ?? "Documented by the clinical/performance team; not evaluated by this platform.",
+        target: "n/a — practitioner-attested",
+        kind: "context",
+      });
+      continue;
+    }
+    // Every non-"context" kind is defined with metric_type/operator/target/unit
+    // by construction (only "context" criteria omit them, and that branch
+    // already continued above), so these are safe to assert non-null here.
+    const metricType = c.metric_type!;
+    const operator = c.operator!;
+    const target = c.target!;
+    const unit = c.unit ?? "";
+    const def = metricDef(metricType);
     if (c.kind === "lsi") {
       if (!involvedSide) {
         evidence.push({
           id: c.id, label: c.label, met: null,
           observed: "involved side not recorded on the injury record",
-          target: `${c.operator} ${c.target}${c.unit}`,
+          target: `${operator} ${target}${unit}`,
         });
         continue;
       }
@@ -338,7 +370,7 @@ function rtsFindings(facilityId: string, athleteId: string): number {
              WHERE m.facility_id = ? AND m.athlete_id = ? AND m.metric_type = ? AND m.side = ?
              GROUP BY m.session_id ORDER BY s.session_date DESC LIMIT 1`
           )
-          .get(facilityId, athleteId, c.metric_type, side) as
+          .get(facilityId, athleteId, metricType, side) as
           | { id: string; v: number; date: string }
           | undefined;
         return row;
@@ -349,32 +381,32 @@ function rtsFindings(facilityId: string, athleteId: string): number {
         evidence.push({
           id: c.id, label: c.label, met: null,
           observed: "no recent per-side data for this metric",
-          target: `${c.operator} ${c.target}${c.unit}`,
+          target: `${operator} ${target}${unit}`,
         });
         continue;
       }
       const lsi = limbSymmetryIndex(inv.v, uninv.v, involvedSide);
-      const met = c.operator === ">=" ? lsi.lsiPct >= c.target : lsi.lsiPct <= c.target;
+      const met = operator === ">=" ? lsi.lsiPct >= target : lsi.lsiPct <= target;
       evidence.push({
         id: c.id, label: c.label, met,
         observed: `LSI ${fmt(lsi.lsiPct, 1)}% (${involvedSide} ${fmt(inv.v, def.precision)} / ${involvedSide === "left" ? "right" : "left"} ${fmt(uninv.v, def.precision)} ${def.unit}, ${inv.date})`,
-        target: `${c.operator} ${c.target}${c.unit}`,
+        target: `${operator} ${target}${unit}`,
       });
       metricIds.push(inv.id);
       latestDate = latestDate && latestDate > inv.date ? latestDate : inv.date;
     } else if (c.kind === "absolute" || c.kind === "baseline_pct") {
-      const series = sessionBestSeries(facilityId, athleteId, c.metric_type);
+      const series = sessionBestSeries(facilityId, athleteId, metricType);
       if (series.length === 0) {
         evidence.push({
           id: c.id, label: c.label, met: null,
           observed: "no data recorded for this metric",
-          target: `${c.operator} ${c.target}${c.unit}`,
+          target: `${operator} ${target}${unit}`,
         });
         continue;
       }
       const latest = series[series.length - 1];
       let observedVal = latest.value;
-      let targetDesc = `${c.operator} ${c.target}${c.unit}`;
+      let targetDesc = `${operator} ${target}${unit}`;
       let met: boolean;
       if (c.kind === "baseline_pct") {
         // baseline = mean of sessions before the injury date
@@ -384,21 +416,21 @@ function rtsFindings(facilityId: string, athleteId: string): number {
           evidence.push({
             id: c.id, label: c.label, met: null,
             observed: `only ${pre.length} pre-injury sessions — pre-injury baseline not computable`,
-            target: `${c.operator} ${c.target}% of pre-injury baseline`,
+            target: `${operator} ${target}% of pre-injury baseline`,
           });
           continue;
         }
         const baseMean = mean(pre.map((s) => s.value));
         observedVal = (latest.value / baseMean) * 100;
-        targetDesc = `${c.operator} ${c.target}% of pre-injury baseline (${fmt(baseMean, def.precision)} ${def.unit}, n=${pre.length})`;
-        met = c.operator === ">=" ? observedVal >= c.target : observedVal <= c.target;
+        targetDesc = `${operator} ${target}% of pre-injury baseline (${fmt(baseMean, def.precision)} ${def.unit}, n=${pre.length})`;
+        met = operator === ">=" ? observedVal >= target : observedVal <= target;
         evidence.push({
           id: c.id, label: c.label, met,
           observed: `${fmt(observedVal, 1)}% of baseline (${fmt(latest.value, def.precision)} ${def.unit} on ${latest.date})`,
           target: targetDesc,
         });
       } else {
-        met = c.operator === ">=" ? observedVal >= c.target : observedVal <= c.target;
+        met = operator === ">=" ? observedVal >= target : observedVal <= target;
         evidence.push({
           id: c.id, label: c.label, met,
           observed: `${fmt(observedVal, def.precision)} ${def.unit} (${latest.date})`,
@@ -409,16 +441,23 @@ function rtsFindings(facilityId: string, athleteId: string): number {
     }
   }
 
-  const metCount = evidence.filter((e) => e.met === true).length;
-  const pendingData = evidence.filter((e) => e.met === null).length;
-  const total = evidence.length;
+  // Context (practitioner-attested) items are evidence, but they're never
+  // computed by this platform, so they're kept out of the "X of Y met"
+  // count — that count means "computed criteria met," not "all boxes checked."
+  const computedEvidence = evidence.filter((e) => e.kind !== "context");
+  const contextCount = evidence.length - computedEvidence.length;
+  const metCount = computedEvidence.filter((e) => e.met === true).length;
+  const pendingData = computedEvidence.filter((e) => e.met === null).length;
+  const total = computedEvidence.length;
 
   insertFinding(facilityId, athleteId, {
     category: "rts_stage_status",
     severity: "info",
-    headline: `Stage ${current.stage_number} (“${current.name}”): ${metCount} of ${total} practitioner-defined criteria currently met`,
+    headline: `Stage ${current.stage_number} (“${current.name}”): ${metCount} of ${total} practitioner-defined criteria currently met${contextCount > 0 ? ` (+${contextCount} item${contextCount === 1 ? "" : "s"} documented by the clinical/performance team, tracked separately)` : ""}`,
     detail: `Criteria status for ${protocol.name} (v${protocol.version}), defined by ${protocol.defined_by}. This is measured evidence against practitioner-set targets — stage progression and return decisions remain with the clinical and performance team.${
       pendingData > 0 ? ` ${pendingData} criteri${pendingData === 1 ? "on" : "a"} lack sufficient data and are shown as “insufficient data”, not as met.` : ""
+    }${
+      contextCount > 0 ? ` ${contextCount} additional criteri${contextCount === 1 ? "on is" : "a are"} practitioner-attested (e.g. range of motion, pain/swelling, tests this platform does not compute) and ${contextCount === 1 ? "is" : "are"} shown as documented separately, not evaluated here.` : ""
     }`,
     refs: {
       protocolId: protocol.id,

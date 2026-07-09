@@ -175,23 +175,43 @@ function addStage(
   ).run(newId(), RPI, protocolId, stageNumber, name, description, JSON.stringify(criteria), status, enteredOn, completedOn);
 }
 
-addStage(1, "Early loading", "Re-establish pain-free bilateral loading and baseline testing habits.", "completed", "2026-03-02", "2026-04-19", [
+// Staged-criteria framework below is practitioner-defined for this facility.
+// The percentage-progression labels (~50% / ~75% / plyometric / sprint-cutting)
+// and the general shape of a 4-stage running -> strength -> plyometric ->
+// sprint/cutting progression reflect common graded return-to-sport staging
+// conventions; no single external publication is asserted as the source for
+// the specific numeric thresholds used here, and none should be inferred.
+// "MVIC LSI" criteria are evaluated against this platform's IMTP peak force
+// LSI — an isometric mid-thigh pull is a maximum voluntary isometric
+// contraction test, so this is a relabeling of an existing computed
+// criterion, not a new metric. Items the platform cannot compute (hop test,
+// plantarflexor strength, ROM, pain/swelling) are recorded as kind:"context"
+// — practitioner-attested evidence, never merged into computed criteria.
+addStage(1, "Early loading", "Re-establish pain-free bilateral loading and baseline testing habits. Corresponds to approximately 50% running progression, per practitioner guidance.", "completed", "2026-03-02", "2026-04-19", [
   { id: "s1c1", label: "Tolerates bilateral CMJ testing (any height recorded)", metric_type: "cmj_jump_height", kind: "absolute", operator: ">=", target: 10, unit: " cm" },
   { id: "s1c2", label: "IMTP relative force", metric_type: "imtp_relative_force", kind: "absolute", operator: ">=", target: 20, unit: " N/kg" },
+  { id: "s1c3", label: "MVIC LSI (IMTP peak force, involved/uninvolved)", metric_type: "imtp_peak_force", kind: "lsi", operator: ">=", target: 70, unit: "%" },
+  { id: "s1c4", label: "Hop test symmetry ≥70%", kind: "context", note: "Hop-test symmetry documented by the clinical/performance team; this platform has no hop-test data source configured." },
+  { id: "s1c5", label: "Pain-free weight-bearing; no swelling", kind: "context", note: "Documented by the clinical/performance team." },
 ]);
-addStage(2, "Strength restoration", "Rebuild force capacity; track limb symmetry on isometric testing.", "completed", "2026-04-20", "2026-05-31", [
-  { id: "s2c1", label: "IMTP peak force LSI (involved/uninvolved)", metric_type: "imtp_peak_force", kind: "lsi", operator: ">=", target: 85, unit: "%" },
+addStage(2, "Strength restoration", "Rebuild force capacity; track limb symmetry on isometric testing. Corresponds to approximately 75% running progression, per practitioner guidance.", "completed", "2026-04-20", "2026-05-31", [
+  { id: "s2c1", label: "MVIC LSI 80–85% (IMTP peak force, involved/uninvolved)", metric_type: "imtp_peak_force", kind: "lsi", operator: ">=", target: 80, unit: "% (stage target band: 80–85%)" },
   { id: "s2c2", label: "CMJ jump height vs pre-injury baseline", metric_type: "cmj_jump_height", kind: "baseline_pct", operator: ">=", target: 75, unit: "%" },
+  { id: "s2c3", label: "Full passive range of motion", kind: "context", note: "Documented by the clinical/performance team." },
 ]);
-addStage(3, "Power & reactive capacity", "Restore braking capacity, reactive strength, and jump output toward pre-injury levels.", "current", "2026-06-01", null, [
+addStage(3, "Power & reactive capacity", "Restore braking capacity, reactive strength, and jump output toward pre-injury levels. Plyometric/jumping progression stage; criteria framework informed by common graded return-to-sport staging conventions (practitioner-defined for this facility — no single external source is asserted).", "current", "2026-06-01", null, [
   { id: "s3c1", label: "Eccentric braking impulse LSI (involved/uninvolved)", metric_type: "cmj_ecc_braking_impulse", kind: "lsi", operator: ">=", target: 90, unit: "%" },
   { id: "s3c2", label: "IMTP peak force LSI (involved/uninvolved)", metric_type: "imtp_peak_force", kind: "lsi", operator: ">=", target: 90, unit: "%" },
   { id: "s3c3", label: "CMJ jump height vs pre-injury baseline", metric_type: "cmj_jump_height", kind: "baseline_pct", operator: ">=", target: 90, unit: "%" },
   { id: "s3c4", label: "Drop jump RSI", metric_type: "dj_rsi", kind: "absolute", operator: ">=", target: 2.0, unit: "" },
+  { id: "s3c5", label: "Plantarflexor LSI ≥80%", kind: "context", note: "This platform has no isolated plantarflexor dynamometry data source; drop jump RSI and eccentric braking impulse LSI above are the closest computed proxies for reactive/plyometric lower-leg capacity. Plantarflexor strength itself is documented by the clinical/performance team." },
+  { id: "s3c6", label: "Full pain-free range of motion", kind: "context", note: "Documented by the clinical/performance team." },
 ]);
-addStage(4, "Sport reintegration", "Progressive return to full team training and competition exposure.", "pending", null, null, [
+addStage(4, "Sport reintegration", "Progressive return to full team training and competition exposure. Sprint / cutting / full progression stage, per practitioner guidance.", "pending", null, null, [
   { id: "s4c1", label: "Eccentric braking impulse LSI", metric_type: "cmj_ecc_braking_impulse", kind: "lsi", operator: ">=", target: 95, unit: "%" },
   { id: "s4c2", label: "CMJ jump height vs pre-injury baseline", metric_type: "cmj_jump_height", kind: "baseline_pct", operator: ">=", target: 95, unit: "%" },
+  { id: "s4c3", label: "IMTP peak force LSI ≥90%", metric_type: "imtp_peak_force", kind: "lsi", operator: ">=", target: 90, unit: "%" },
+  { id: "s4c4", label: "Full symmetric range of motion; no pain; no swelling", kind: "context", note: "Documented by the clinical/performance team." },
 ]);
 
 /* ---------------- clinical assessments (human-authored) ---------------- */

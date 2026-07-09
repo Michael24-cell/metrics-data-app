@@ -1,6 +1,9 @@
 /**
- * Stage/criteria status — always evidence (met / not met / insufficient data),
- * never a verdict or readiness score.
+ * Stage/criteria status — always evidence (met / not met / insufficient data /
+ * documented separately), never a verdict or readiness score. "Documented
+ * separately" marks practitioner-attested items (e.g. ROM, pain/swelling)
+ * that this platform does not compute — distinct from "insufficient data",
+ * which means the platform tried and doesn't have enough sessions yet.
  */
 
 import { FindingRefs } from "@/lib/findings/engine";
@@ -23,7 +26,9 @@ export default function StageCriteria({ criteria }: { criteria: NonNullable<Find
             <td style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{c.observed}</td>
             <td style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{c.target}</td>
             <td>
-              {c.met === null ? (
+              {c.kind === "context" ? (
+                <span className="chip">documented separately</span>
+              ) : c.met === null ? (
                 <span className="chip">insufficient data</span>
               ) : c.met ? (
                 <span className="chip" data-tone="ok">criterion met</span>
