@@ -603,6 +603,115 @@ function runSynthetic(athlete: AthleteSpec, input: SyntheticInput, facilityId = 
   console.log(`Manual entry (Elena): ${result.status}, ${result.metricCount} metrics`);
 }
 
+/* ---------------- Men's Basketball — 15-player demo team ----------------
+ *
+ * One coherent team at Ridgeline (same facility, same dual plate): exactly
+ * 6 guards, 6 forwards, 3 centers. All names/values are synthetic. Built for
+ * team/position comparison demos: realistic position-typical distributions,
+ * mixed trends (improving / flat / declining / mid-season dip), genuine
+ * bilateral asymmetry with side changes, and a few HONEST gaps — a new
+ * signing with 2 sessions, a CMJ-only forward, a stale sparse center — so
+ * insufficient-data states are visible. The 3-center group intentionally
+ * keeps position cohorts under the n<5 small-sample warning threshold.
+ */
+
+interface HooperSpec {
+  a: AthleteSpec;
+  /** CMJ takeoff velocity at window start + total drift across the window */
+  cmjV0: number;
+  cmjTrend: number;
+  /** IMTP net peak force per body mass (N/kg) at window start + drift */
+  imtpNkg0: number;
+  imtpTrend: number;
+  /** left-plate share of force; drift moves it across 0.5 to flip sides */
+  leftShare: number;
+  leftDrift: number;
+  cmjSessions: number;
+  imtpSessions: number;
+  startDate: string;
+  /** IMTP rise time constant (centers slower to peak) */
+  tau: number;
+  /** mid-window performance dip (fraction of v, e.g. 0.05 = −5% at midpoint) */
+  dip?: number;
+}
+
+{
+  const bballTeam = "Men's Basketball";
+  const hooper = (
+    name: string, position: string, heightCm: number, massKg: number, birthYear: number
+  ): AthleteSpec => ({
+    id: newId(), name, sport: "Basketball", position, team: bballTeam,
+    sex: "M", birthYear, heightCm, massKg, status: "active",
+  });
+
+  const squad: HooperSpec[] = [
+    // -------- guards (6): springier jumps, lighter, faster to peak --------
+    { a: hooper("Jaylen Carter", "Guard", 188, 86, 2002), cmjV0: 2.74, cmjTrend: 0.06, imtpNkg0: 29.5, imtpTrend: 1.2, leftShare: 0.502, leftDrift: 0, cmjSessions: 13, imtpSessions: 8, startDate: "2026-01-12", tau: 0.23 },
+    { a: hooper("Marcus Webb", "Guard", 191, 89, 2001), cmjV0: 2.66, cmjTrend: 0.0, imtpNkg0: 30.8, imtpTrend: 0.2, leftShare: 0.493, leftDrift: 0, cmjSessions: 12, imtpSessions: 7, startDate: "2026-01-19", tau: 0.24 },
+    { a: hooper("Deshawn Riley", "Guard", 185, 83, 2003), cmjV0: 2.7, cmjTrend: 0.03, imtpNkg0: 28.4, imtpTrend: 0.8, leftShare: 0.497, leftDrift: 0.012, cmjSessions: 13, imtpSessions: 8, startDate: "2026-01-14", tau: 0.23 }, // stronger side flips across the season
+    { a: hooper("Tyrese Coleman", "Guard", 193, 92, 2000), cmjV0: 2.62, cmjTrend: -0.05, imtpNkg0: 31.2, imtpTrend: -0.9, leftShare: 0.508, leftDrift: 0, cmjSessions: 12, imtpSessions: 7, startDate: "2026-01-21", tau: 0.25, dip: 0.02 }, // gradual decline
+    { a: hooper("Andre Boateng", "Guard", 186, 84, 2004), cmjV0: 2.58, cmjTrend: 0.09, imtpNkg0: 26.9, imtpTrend: 2.1, leftShare: 0.499, leftDrift: 0, cmjSessions: 14, imtpSessions: 8, startDate: "2026-01-13", tau: 0.24 }, // young, improving fast
+    { a: hooper("Nico Petrov", "Guard", 190, 88, 2005), cmjV0: 2.6, cmjTrend: 0, imtpNkg0: 27.5, imtpTrend: 0, leftShare: 0.5, leftDrift: 0, cmjSessions: 2, imtpSessions: 0, startDate: "2026-06-22", tau: 0.24 }, // new signing — 2 sessions, no IMTP yet
+    // -------- forwards (6) --------
+    { a: hooper("Isaiah Grant", "Forward", 201, 98, 2001), cmjV0: 2.56, cmjTrend: 0.04, imtpNkg0: 30.1, imtpTrend: 0.9, leftShare: 0.503, leftDrift: 0, cmjSessions: 13, imtpSessions: 8, startDate: "2026-01-12", tau: 0.26 },
+    { a: hooper("Omar Haddad", "Forward", 198, 96, 2002), cmjV0: 2.5, cmjTrend: 0.01, imtpNkg0: 29.0, imtpTrend: 0.4, leftShare: 0.472, leftDrift: 0, cmjSessions: 12, imtpSessions: 8, startDate: "2026-01-15", tau: 0.27 }, // persistent right-dominant asymmetry ~11% (watch band)
+    { a: hooper("Caleb Nakamura", "Forward", 203, 101, 2003), cmjV0: 2.48, cmjTrend: 0.05, imtpNkg0: 28.2, imtpTrend: 1.4, leftShare: 0.496, leftDrift: 0, cmjSessions: 13, imtpSessions: 7, startDate: "2026-01-20", tau: 0.27 },
+    { a: hooper("Victor Osei", "Forward", 200, 99, 2000), cmjV0: 2.53, cmjTrend: -0.02, imtpNkg0: 31.0, imtpTrend: 0.1, leftShare: 0.505, leftDrift: 0, cmjSessions: 12, imtpSessions: 7, startDate: "2026-01-16", tau: 0.26, dip: 0.05 }, // mid-season dip, partial recovery
+    { a: hooper("Liam Donnelly", "Forward", 199, 97, 2004), cmjV0: 2.45, cmjTrend: 0.03, imtpNkg0: 27.0, imtpTrend: 0, leftShare: 0.501, leftDrift: 0, cmjSessions: 11, imtpSessions: 0, startDate: "2026-02-02", tau: 0.27 }, // CMJ only — no IMTP history
+    { a: hooper("Rashad Fields", "Forward", 204, 103, 2002), cmjV0: 2.51, cmjTrend: 0.02, imtpNkg0: 29.8, imtpTrend: 0.7, leftShare: 0.492, leftDrift: 0, cmjSessions: 13, imtpSessions: 8, startDate: "2026-01-13", tau: 0.26 },
+    // -------- centers (3): heavier, lower jumps, high absolute force, slower to peak --------
+    { a: hooper("Dmitri Volkov", "Center", 211, 114, 2001), cmjV0: 2.36, cmjTrend: 0.02, imtpNkg0: 30.5, imtpTrend: 0.5, leftShare: 0.506, leftDrift: 0, cmjSessions: 12, imtpSessions: 7, startDate: "2026-01-19", tau: 0.3 },
+    { a: hooper("Samuel Adeyemi", "Center", 209, 110, 2003), cmjV0: 2.4, cmjTrend: 0.05, imtpNkg0: 28.6, imtpTrend: 1.1, leftShare: 0.494, leftDrift: 0, cmjSessions: 12, imtpSessions: 7, startDate: "2026-01-22", tau: 0.29 },
+    { a: hooper("Ben Kowalski", "Center", 213, 117, 2000), cmjV0: 2.32, cmjTrend: -0.01, imtpNkg0: 31.5, imtpTrend: 0, leftShare: 0.503, leftDrift: 0, cmjSessions: 4, imtpSessions: 3, startDate: "2026-02-09", tau: 0.31 }, // sparse + stale — last tested well before TODAY
+  ];
+
+  const guards = squad.filter((s) => s.a.position === "Guard").length;
+  const forwards = squad.filter((s) => s.a.position === "Forward").length;
+  const centers = squad.filter((s) => s.a.position === "Center").length;
+  if (guards !== 6 || forwards !== 6 || centers !== 3) {
+    throw new Error(`Basketball squad composition wrong: ${guards}G/${forwards}F/${centers}C (need 6/6/3)`);
+  }
+
+  squad.forEach((spec, idx) => {
+    addAthlete(RPI, spec.a);
+    const rand = rng(910_000 + idx * 1_000);
+    const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+    // Ben Kowalski's sparse block runs on a long cadence and ends in spring
+    // (stale); everyone else tests through late June / early July.
+    const cmjCadence = spec.a.name === "Ben Kowalski" ? 18 : 13;
+    const cmj: CmjSessionSpec[] = [];
+    let d = spec.startDate;
+    for (let n = 0; n < spec.cmjSessions; n++) {
+      const progress = spec.cmjSessions > 1 ? n / (spec.cmjSessions - 1) : 0;
+      // optional mid-window dip: gaussian bump centered at progress 0.5
+      const dip = spec.dip ? spec.dip * Math.exp(-Math.pow((progress - 0.5) / 0.18, 2)) : 0;
+      cmj.push({
+        date: d,
+        v: spec.cmjV0 + spec.cmjTrend * progress - spec.cmjV0 * dip + (rand() - 0.5) * 0.05,
+        depth: 1.0 + (rand() - 0.5) * 0.05,
+        leftShare: clamp(spec.leftShare + spec.leftDrift * (progress - 0.5) * 2 + (rand() - 0.5) * 0.008, 0.42, 0.58),
+      });
+      d = addDays(d, cmjCadence + Math.round(rand() * 3));
+    }
+
+    const imtp: ImtpSessionSpec[] = [];
+    d = addDays(spec.startDate, 4);
+    for (let n = 0; n < spec.imtpSessions; n++) {
+      const progress = spec.imtpSessions > 1 ? n / (spec.imtpSessions - 1) : 0;
+      imtp.push({
+        date: d,
+        peakNet: (spec.imtpNkg0 + spec.imtpTrend * progress + (rand() - 0.5) * 0.8) * spec.a.massKg,
+        tau: spec.tau + (rand() - 0.5) * 0.02,
+        leftShare: clamp(spec.leftShare + spec.leftDrift * (progress - 0.5) * 2 + (rand() - 0.5) * 0.008, 0.42, 0.58),
+      });
+      d = addDays(d, 21 + Math.round(rand() * 4));
+    }
+
+    runSynthetic(spec.a, buildSyntheticInput(spec.a, cmj, imtp, [], rpiPlate, 910_000 + idx * 1_000));
+  });
+}
+
 /* ---------------- summary ---------------- */
 
 const counts = (table: string) =>
