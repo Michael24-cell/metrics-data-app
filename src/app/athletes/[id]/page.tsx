@@ -11,6 +11,8 @@ import {
   imtpForceWindowSummary,
 } from "@/lib/services/queries";
 import { curveWorkspace } from "@/lib/services/curves";
+import { liveLoadVelocityProfiles } from "@/lib/services/loadVelocity";
+import LoadVelocityChart from "@/components/charts/LoadVelocityChart";
 import {
   TEST_TYPES,
   METRIC_GROUPS,
@@ -43,7 +45,7 @@ export default async function AthletePage({
   const detail = athleteDetail(facility.id, id);
   if (!detail) notFound();
 
-  const { athlete, sessions, protocol, stages, assessments, milestones, training, lvProfiles } = detail;
+  const { athlete, sessions, protocol, stages, assessments, milestones, training } = detail;
   const options = facilityFilterOptions(facility.id);
   const range = { from: sp.from, to: sp.to };
 
@@ -122,6 +124,11 @@ export default async function AthletePage({
     .filter((s) => (!sp.from || s.session_date >= sp.from) && (!sp.to || s.session_date <= sp.to));
 
   const trainingRecent = training.slice(-30);
+
+  // Live load–velocity: latest session per exercise, rebuilt from stored reps.
+  const lvSessions = liveLoadVelocityProfiles(facility.id, id);
+  const lvLatest: typeof lvSessions = [];
+  for (const s of lvSessions) if (!lvLatest.some((x) => x.exercise === s.exercise)) lvLatest.push(s);
 
   const href = (patch: Record<string, string | undefined>) => {
     const next: Record<string, string> = {};
@@ -497,55 +504,93 @@ export default async function AthletePage({
         </details>
       )}
 
-      {(trainingRecent.length > 0 || lvProfiles.length > 0) && (
-        <div className="grid2">
-          {trainingRecent.length > 0 && (
-            <div className="panel">
-              <h2>Training load (context)</h2>
-              <p className="panel-sub">Session RPE × duration, arbitrary units. Context for findings — never a suppressor.</p>
-              <TrendChart
-                points={trainingRecent.map((t) => ({ date: t.session_date, value: t.load_au ?? 0 }))}
-                label="Session load"
-                unit="AU"
-                precision={0}
-                color="var(--stage)"
-                height={170}
-              />
-            </div>
-          )}
-          {lvProfiles.length > 0 && (
-            <div className="panel">
-              <h2>
-                Load–velocity profile{" "}
-                <span className="chip" data-tone="provisional">provisional</span>
-              </h2>
-              <p className="panel-sub">
-                {lvProfiles[0].exercise.replace("_", " ")} · fitted {lvProfiles[0].fitted_on} · R²{" "}
-                {lvProfiles[0].r2.toFixed(3)} · method {lvProfiles[0].method_version}. No 1RM estimate or
-                prescription is derived until the protocol is validated for this athlete.
-              </p>
-              <table className="data">
-                <thead>
-                  <tr><th className="num">Load (kg)</th><th className="num">Mean velocity (m/s)</th></tr>
-                </thead>
-                <tbody>
-                  {(JSON.parse(lvProfiles[0].points_json) as { loadKg: number; meanVelocityMs: number }[]).map(
-                    (p) => (
+      {trainingRecent.length > 0 && (
+        <div className="panel">
+          <h2>Training load (context)</h2>
+          <p className="panel-sub">Session RPE × duration, arbitrary units. Context for findings — never a suppressor.</p>
+          <TrendChart
+            points={trainingRecent.map((t) => ({ date: t.session_date, value: t.load_au ?? 0 }))}
+            label="Session load"
+            unit="AU"
+            precision={0}
+            color="var(--stage)"
+            height={170}
+          />
+        </div>
+      )}
+
+      {lvLatest.map((s) => (
+        <div className="panel" key={`${s.trainingSessionId}-${s.exercise}`}>
+          <h2>
+            Load–velocity profile — {s.exercise.replace(/_/g, " ")}{" "}
+            <span className="chip" data-tone={s.profile.status === "insufficient" ? "alert" : "provisional"}>
+              {s.profile.status === "insufficient"
+                ? "insufficient data"
+                : s.profile.method === "two_point"
+                  ? "two-point method"
+                  : `${s.profile.distinctLoads}-load profile`}
+            </span>
+          </h2>
+          <p className="panel-sub">
+            Rebuilt from this athlete&apos;s stored reps ({s.date}): {s.profile.aggregation},{" "}
+            {s.profile.distinctLoads} distinct load{s.profile.distinctLoads === 1 ? "" : "s"},{" "}
+            {s.profile.validReps} valid rep{s.profile.validReps === 1 ? "" : "s"}. No 1RM estimate or load
+            prescription is derived, and the fitted line is never extrapolated beyond the observed loads.
+          </p>
+          {s.profile.status === "fitted" ? (
+            <div className="grid2" style={{ alignItems: "start" }}>
+              <LoadVelocityChart profile={s.profile} />
+              <div>
+                <table className="data">
+                  <thead>
+                    <tr><th className="num">Load (kg)</th><th className="num">Mean velocity (m/s)</th><th className="num">Valid reps</th></tr>
+                  </thead>
+                  <tbody>
+                    {s.profile.points.map((p) => (
                       <tr key={p.loadKg}>
                         <td className="num">{p.loadKg}</td>
                         <td className="num">{p.meanVelocityMs.toFixed(2)}</td>
+                        <td className="num">{p.repCount}</td>
                       </tr>
-                    )
-                  )}
-                </tbody>
-              </table>
-              <div style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 8, fontFamily: "var(--font-mono)" }}>
-                slope {lvProfiles[0].slope.toFixed(4)} (m/s)/kg · intercept {lvProfiles[0].intercept.toFixed(2)} m/s
+                    ))}
+                  </tbody>
+                </table>
+                <div style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 8, fontFamily: "var(--font-mono)" }}>
+                  v = {s.profile.intercept!.toFixed(2)} {s.profile.slope! < 0 ? "−" : "+"} {Math.abs(s.profile.slope!).toFixed(4)} × load
+                  {" · "}method: {s.profile.method === "two_point" ? "two-point linear" : "least squares"}
+                  {s.profile.r2 != null && <> · R² {s.profile.r2.toFixed(3)}</>}
+                </div>
               </div>
+            </div>
+          ) : (
+            <div className="callout">
+              {s.profile.points.length === 1
+                ? `Only one distinct load (${s.profile.points[0].loadKg} kg, mean ${s.profile.points[0].meanVelocityMs.toFixed(2)} m/s over ${s.profile.points[0].repCount} reps) — a profile needs at least 2 distinct loads.`
+                : "No valid reps recorded for this session."}
+            </div>
+          )}
+          {s.profile.excludedReps.length > 0 && (
+            <div style={{ fontSize: 12.5, color: "var(--ink-dim)", marginTop: 8 }}>
+              Excluded reps:{" "}
+              {s.profile.excludedReps.map((r) => `${r.loadKg} kg @ ${r.meanVelocityMs.toFixed(2)} m/s (${r.reason})`).join("; ")}
+            </div>
+          )}
+          <ul style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 8, paddingLeft: 18 }}>
+            {/* the insufficient-data callout above already states the distinct-load requirement */}
+            {s.profile.notes
+              .filter((n) => s.profile.status !== "insufficient" || !n.includes("distinct load"))
+              .map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+          </ul>
+          {lvSessions.filter((x) => x.exercise === s.exercise).length > 1 && (
+            <div style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+              {lvSessions.filter((x) => x.exercise === s.exercise).length - 1} earlier{" "}
+              {s.exercise.replace(/_/g, " ")} session(s) on record.
             </div>
           )}
         </div>
-      )}
+      ))}
 
       {assessments.length > 0 && (
         <div className="panel">

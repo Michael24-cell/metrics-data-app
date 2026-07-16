@@ -232,6 +232,7 @@ CREATE TABLE IF NOT EXISTS velocity_rep (
   mean_velocity_ms REAL NOT NULL,
   peak_velocity_ms REAL,
   method_version TEXT NOT NULL,
+  quality_flag TEXT,                             -- null | explicit exclusion reason (reps are NEVER auto-discarded)
   created_at TEXT NOT NULL
 );
 

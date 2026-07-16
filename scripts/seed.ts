@@ -30,7 +30,7 @@ import {
   runImportBatch,
   SyntheticInput,
 } from "../src/lib/pipeline/adapters";
-import { fitLoadVelocityProfile } from "../src/lib/calc/profiles";
+
 
 const db = getDb();
 const now = nowIso();
@@ -289,10 +289,10 @@ function addTraining(
     { date: "2026-05-22", loads: [45, 60, 75, 90], baseV: 1.06 },
     { date: "2026-07-01", loads: [50, 65, 80, 95], baseV: 1.1 },
   ];
-  let lastPoints: { loadKg: number; meanVelocityMs: number }[] = [];
+  // NOTE: no load_velocity_profile rows are authored here anymore — the app
+  // rebuilds every profile live from these stored reps (services/loadVelocity).
   for (const s of sessions) {
     const tsId = addTraining(RPI, maya.id, s.date, "strength", 70, 7, "Load–velocity characterization: back squat");
-    const points: { loadKg: number; meanVelocityMs: number }[] = [];
     s.loads.forEach((load, i) => {
       const setId = newId();
       db.prepare(
@@ -306,17 +306,47 @@ function addTraining(
            VALUES (?, ?, ?, ?, ?, ?, '1.0.0', ?)`
         ).run(newId(), RPI, setId, rep, Math.round((setVel + (rand() - 0.5) * 0.04) * 100) / 100, Math.round((setVel * 1.6) * 100) / 100, now);
       }
-      points.push({ loadKg: load, meanVelocityMs: Math.round(setVel * 100) / 100 });
     });
-    lastPoints = points;
-    const profile = fitLoadVelocityProfile("back_squat", points);
-    db.prepare(
-      `INSERT INTO load_velocity_profile (id, facility_id, athlete_id, exercise, slope, intercept, r2, n_points, method_version, provisional, fitted_on, points_json, created_at)
-       VALUES (?, ?, ?, 'back_squat', ?, ?, ?, ?, ?, 1, ?, ?, ?)`
-    ).run(newId(), RPI, maya.id, profile.fit.slope, profile.fit.intercept, profile.fit.r2, profile.fit.n, profile.methodVersion, s.date, JSON.stringify(points), now);
   }
-  void lastPoints;
 }
+
+/* ---------------- VBT: two-point and insufficient-data demo states ---------------- */
+
+// Small helper: one VBT training session with explicit loads × reps.
+function addVbtSession(
+  athleteId: string,
+  date: string,
+  exercise: string,
+  loads: { loadKg: number; reps: { v: number; flag?: string }[] }[],
+  note: string
+) {
+  const tsId = addTraining(RPI, athleteId, date, "strength", 45, 7, note);
+  loads.forEach((l, i) => {
+    const setId = newId();
+    db.prepare(
+      `INSERT INTO exercise_set (id, facility_id, training_session_id, exercise, set_number, load_kg, reps, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(setId, RPI, tsId, exercise, i + 1, l.loadKg, l.reps.length, now);
+    l.reps.forEach((r, ri) => {
+      db.prepare(
+        `INSERT INTO velocity_rep (id, facility_id, exercise_set_id, rep_number, mean_velocity_ms, peak_velocity_ms, method_version, quality_flag, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, '1.0.0', ?, ?)`
+      ).run(newId(), RPI, setId, ri + 1, r.v, Math.round(r.v * 1.6 * 100) / 100, r.flag ?? null, now);
+    });
+  });
+}
+
+// Tessa — valid TWO-POINT profile (light + heavy trap-bar deadlift), with one
+// coach-flagged rep proving explicit (never automatic) exclusion.
+addVbtSession(tessa.id, "2026-07-02", "trap_bar_deadlift", [
+  { loadKg: 60, reps: [{ v: 0.98 }, { v: 1.01 }, { v: 0.97 }] },
+  { loadKg: 110, reps: [{ v: 0.46 }, { v: 0.44 }, { v: 0.61, flag: "bar path fault — coach flagged" }] },
+], "Two-point load–velocity check: trap bar deadlift");
+
+// Dario — INSUFFICIENT data: a single load only (no profile can be fitted).
+addVbtSession(dario.id, "2026-07-05", "back_squat", [
+  { loadKg: 80, reps: [{ v: 0.66 }, { v: 0.68 }, { v: 0.65 }] },
+], "Velocity monitoring at working load only");
 
 /* ---------------- synthetic force-plate histories ---------------- */
 

@@ -22,6 +22,11 @@ export function getDb(): DatabaseSync {
   } catch {
     /* column already exists — expected on any db created with the current schema */
   }
+  try {
+    _db.exec(`ALTER TABLE velocity_rep ADD COLUMN quality_flag TEXT`);
+  } catch {
+    /* column already exists — expected on any db created with the current schema */
+  }
   return _db;
 }
 
