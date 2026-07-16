@@ -37,6 +37,23 @@ export function asymmetryIndex(left: number, right: number): AsymmetryResult {
   };
 }
 
+/**
+ * Count how many times the stronger side flips across an ordered series of
+ * asymmetry points. "equal" never counts as a side, so equal→left or
+ * left→equal are not direction changes — only left↔right transitions are.
+ * Shared by the Agent's asymmetry-history tool and any future cohort/roster
+ * view so direction-change logic exists in exactly one place.
+ */
+export function directionChanges(points: { strongerSide: "left" | "right" | "equal" }[]): number {
+  let changes = 0;
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1].strongerSide;
+    const cur = points[i].strongerSide;
+    if (prev !== cur && prev !== "equal" && cur !== "equal") changes++;
+  }
+  return changes;
+}
+
 export interface LsiResult {
   methodVersion: string;
   /** involved / uninvolved × 100 */

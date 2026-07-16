@@ -90,6 +90,7 @@ export default async function AthletePage({
           </div>
         </div>
         <div className="no-print" style={{ display: "flex", gap: 8 }}>
+          <a className="btn secondary" href={`/agent?athlete=${id}`}>Intelligence agent</a>
           <a className="btn secondary" href={`/athletes/${id}/progress`}>Athlete view</a>
           <a className="btn" href={`/athletes/${id}/report`}>Practitioner report</a>
         </div>
@@ -140,7 +141,10 @@ export default async function AthletePage({
         <h2>What changed</h2>
         <p className="panel-sub">
           Deterministic findings from this athlete&apos;s computed metrics. Insufficient data appears as a
-          data gap, never as a guess.
+          data gap, never as a guess.{" "}
+          <a className="no-print" href={`/agent?athlete=${id}&ask=why_finding`} style={{ color: "var(--accent)" }}>
+            Ask the intelligence agent why →
+          </a>
         </p>
         {findings.length === 0 && <div className="callout" data-tone="ok">No findings for this athlete.</div>}
         {findings.slice(0, 6).map(({ finding, annotations }) => (
@@ -210,7 +214,7 @@ export default async function AthletePage({
 
       {protocol && stageRefs?.criteria && (
         <div className="panel">
-          <h2>Stage criteria status — {protocol.name}</h2>
+          <h2>Progression criteria status — {protocol.name}</h2>
           <p className="panel-sub">
             {stageFinding!.finding.detail}
           </p>
@@ -305,8 +309,8 @@ export default async function AthletePage({
 
       {assessments.length > 0 && (
         <div className="panel">
-          <h2>Clinical &amp; practitioner notes</h2>
-          <p className="panel-sub">Human-authored context, displayed verbatim. The platform never generates clinical statements.</p>
+          <h2>Practitioner notes</h2>
+          <p className="panel-sub">Human-authored context, displayed verbatim. The platform never generates these notes itself.</p>
           {assessments.map((a) => (
             <div key={a.id} className="finding" data-sev="info" style={{ borderLeftColor: "var(--ink-mute)" }}>
               <div className="f-head">

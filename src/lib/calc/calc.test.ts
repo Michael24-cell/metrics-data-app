@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { computeCmj, computeDropJumpRsi } from "./cmj";
-import { computeImtp } from "./imtp";
-import { asymmetryIndex, limbSymmetryIndex } from "./asymmetry";
+import { computeImtp, IMTP_FORCE_POINTS_MS } from "./imtp";
+import { asymmetryIndex, limbSymmetryIndex, directionChanges } from "./asymmetry";
 import { monitorBaseline, SessionPoint } from "./baseline";
 import { leastSquares, fitLoadVelocityProfile } from "./profiles";
 import { generateCmjTrace, generateImtpTrace, generateDjTrace } from "./synthetic";
 import { quietStanding, checkSanity, GRAVITY } from "./signal";
+import { cmjEventMarkers, imtpEventMarkers, displayStartMs, originMs, CURVE_DISPLAY_LEAD_MS } from "./curve";
 
 describe("CMJ impulse–momentum", () => {
   it("recovers the target takeoff velocity and jump height from a synthetic trace", () => {
@@ -69,6 +70,14 @@ describe("CMJ impulse–momentum", () => {
     const b = computeCmj(generateCmjTrace(p));
     expect(a).toEqual(b);
   });
+
+  it("time to takeoff = (takeoffIndex - movementStartIndex) / hz, in ms", () => {
+    const trace = generateCmjTrace({ massKg: 78, takeoffVelocity: 2.6, depthFactor: 1.0, leftShare: 0.5, seed: 21 });
+    const r = computeCmj(trace);
+    const expectedMs = ((r.takeoffIndex - r.movementStartIndex) / trace.hz) * 1000;
+    expect(r.timeToTakeoffS * 1000).toBeCloseTo(expectedMs, 6);
+    expect(r.timeToTakeoffS * 1000).toBeGreaterThan(0);
+  });
 });
 
 describe("IMTP", () => {
@@ -112,6 +121,65 @@ describe("IMTP", () => {
     };
     expect(() => computeImtp(flat)).toThrow(/onset not detected/);
   });
+
+  it("computes all six fixed-time force points, absolute (never a slope/RFD)", () => {
+    const r = computeImtp(trace());
+    expect(r.forcePoints.map((p) => p.ms)).toEqual([...IMTP_FORCE_POINTS_MS]);
+    // absolute force rises monotonically across an exponential-rise trace
+    for (let i = 1; i < r.forcePoints.length; i++) {
+      expect(r.forcePoints[i].forceN).toBeGreaterThan(r.forcePoints[i - 1].forceN);
+    }
+    // each point matches series.force at onset+ms exactly (not net-of-baseline)
+    const t = trace();
+    const onset = computeImtp(t).onsetIndex;
+    for (const p of r.forcePoints) {
+      const idx = onset + Math.round((p.ms / 1000) * t.hz);
+      expect(p.forceN).toBeCloseTo(t.force[idx], 6);
+    }
+  });
+
+  it("relative force at each point = absolute / body mass", () => {
+    const r = computeImtp(trace());
+    for (const p of r.forcePoints) {
+      expect(p.forceN / r.bodyMassKg).toBeCloseTo(p.forceN / (r.bodyWeightN / GRAVITY), 6);
+    }
+  });
+
+  it("left/right force points are produced only for dual-plate data, and never imputed", () => {
+    const dual = computeImtp(generateImtpTrace({ massKg: 82, peakNetForceN: 2200, riseTau: 0.25, leftShare: 0.4, seed: 6 }));
+    for (const p of dual.forcePoints) {
+      expect(p.forceLeftN).toBeDefined();
+      expect(p.forceRightN).toBeDefined();
+      expect(p.forceLeftN! + p.forceRightN!).toBeCloseTo(p.forceN, 1);
+    }
+    const single = computeImtp({ ...generateImtpTrace({ massKg: 82, peakNetForceN: 2200, riseTau: 0.25, leftShare: 0.4, seed: 6 }), left: undefined, right: undefined });
+    for (const p of single.forcePoints) {
+      expect(p.forceLeftN).toBeUndefined();
+      expect(p.forceRightN).toBeUndefined();
+    }
+  });
+
+  it("omits fixed-time points beyond the trial length with a warning, never fabricating", () => {
+    const full = generateImtpTrace({ massKg: 82, peakNetForceN: 2200, riseTau: 0.25, leftShare: 0.5, seed: 5 });
+    // truncate well before the 300ms point but after onset+150ms is reachable
+    const onset = computeImtp(full).onsetIndex;
+    const cutoff = onset + Math.round((180 / 1000) * full.hz);
+    const short: typeof full = { hz: full.hz, force: full.force.slice(0, cutoff) };
+    const r = computeImtp(short);
+    expect(r.forcePoints.map((p) => p.ms)).toEqual([50, 100, 150]);
+    expect(r.warnings.some((w) => /force-at-200ms/.test(w))).toBe(true);
+    expect(r.warnings.some((w) => /force-at-300ms/.test(w))).toBe(true);
+  });
+
+  it("time to peak force = (peakForceIndex - onsetIndex) / hz, in ms, and is missing when onset fails", () => {
+    const r = computeImtp(trace());
+    const expectedMs = ((r.peakForceIndex - r.onsetIndex) / trace().hz) * 1000;
+    expect(r.timeToPeakForceMs).toBeCloseTo(expectedMs, 6);
+    expect(r.timeToPeakForceMs).toBeGreaterThan(0);
+
+    const flat = { hz: 1000, force: new Array(3000).fill(800).map((v, i) => v + Math.sin(i) * 2) };
+    expect(() => computeImtp(flat)).toThrow(/onset not detected/);
+  });
 });
 
 describe("Drop jump RSI", () => {
@@ -148,6 +216,28 @@ describe("Asymmetry / LSI", () => {
   it("rejects invalid inputs", () => {
     expect(() => asymmetryIndex(NaN, 500)).toThrow();
     expect(() => limbSymmetryIndex(450, 0, "left")).toThrow();
+  });
+});
+
+describe("Asymmetry direction changes", () => {
+  const side = (s: "left" | "right" | "equal") => ({ strongerSide: s });
+
+  it("counts left↔right flips, ignoring equal as neither side", () => {
+    const points = [side("left"), side("left"), side("right"), side("left"), side("right"), side("right")];
+    // left, left, right, left, right, right → flips at indices 2,3,4 = 3
+    expect(directionChanges(points)).toBe(3);
+  });
+
+  it("does not count a transition into or out of 'equal' as a direction change", () => {
+    const points = [side("left"), side("equal"), side("right"), side("equal"), side("left")];
+    // left→equal (no), equal→right (no), right→equal (no), equal→left (no)
+    expect(directionChanges(points)).toBe(0);
+  });
+
+  it("returns 0 for a single point or no changes", () => {
+    expect(directionChanges([side("left")])).toBe(0);
+    expect(directionChanges([side("left"), side("left"), side("left")])).toBe(0);
+    expect(directionChanges([])).toBe(0);
   });
 });
 
@@ -227,5 +317,43 @@ describe("Quiet standing estimation", () => {
     const t = generateCmjTrace({ massKg: 90, takeoffVelocity: 2.2, depthFactor: 1, leftShare: 0.5, seed: 2 });
     const { bw } = quietStanding(t, 1.0);
     expect(bw).toBeCloseTo(90 * GRAVITY, -1);
+  });
+});
+
+describe("Curve event markers & alignment contract", () => {
+  it("derives CMJ event markers (ms) from the full-rate result and its own sampling rate", () => {
+    const trace = generateCmjTrace({ massKg: 78, takeoffVelocity: 2.6, depthFactor: 1.0, leftShare: 0.5, seed: 4 });
+    const r = computeCmj(trace);
+    const markers = cmjEventMarkers(r, trace.hz);
+    expect(markers.kind).toBe("cmj");
+    expect(markers.methodVersion).toBe(r.methodVersion);
+    expect(markers.movementStartMs).toBeCloseTo((r.movementStartIndex / trace.hz) * 1000, 1);
+    expect(markers.takeoffMs).toBeCloseTo((r.takeoffIndex / trace.hz) * 1000, 1);
+    expect(markers.takeoffMs).toBeGreaterThan(markers.movementStartMs);
+  });
+
+  it("derives IMTP event markers (ms) from the full-rate result and its own sampling rate", () => {
+    const trace = generateImtpTrace({ massKg: 82, peakNetForceN: 2200, riseTau: 0.25, leftShare: 0.5, seed: 5 });
+    const r = computeImtp(trace);
+    const markers = imtpEventMarkers(r, trace.hz);
+    expect(markers.kind).toBe("imtp");
+    expect(markers.methodVersion).toBe(r.methodVersion);
+    expect(markers.onsetMs).toBeCloseTo((r.onsetIndex / trace.hz) * 1000, 1);
+    expect(markers.peakForceMs).toBeCloseTo((r.peakForceIndex / trace.hz) * 1000, 1);
+    expect(markers.peakForceMs).toBeGreaterThan(markers.onsetMs);
+  });
+
+  it("time-zero is the reference event, and display begins 20ms before it", () => {
+    const trace = generateImtpTrace({ massKg: 82, peakNetForceN: 2200, riseTau: 0.25, leftShare: 0.5, seed: 5 });
+    const r = computeImtp(trace);
+    const markers = imtpEventMarkers(r, trace.hz);
+    expect(CURVE_DISPLAY_LEAD_MS).toBe(20);
+    expect(originMs(markers)).toBeCloseTo(markers.onsetMs, 6);
+    expect(displayStartMs(markers)).toBeCloseTo(markers.onsetMs - 20, 6);
+  });
+
+  it("clamps the display start at 0 rather than going negative for an early onset", () => {
+    const markers = { kind: "imtp" as const, methodVersion: "1.0.0", onsetMs: 5, peakForceMs: 400 };
+    expect(displayStartMs(markers)).toBe(0);
   });
 });

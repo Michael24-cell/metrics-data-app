@@ -8,7 +8,7 @@ import { FindingRefs } from "@/lib/findings/engine";
 
 const CATEGORY_LABEL: Record<string, string> = {
   baseline_deviation: "Baseline deviation",
-  rts_stage_status: "Stage criteria status",
+  rts_stage_status: "Progression criteria status",
   asymmetry_flag: "Asymmetry",
   training_context_note: "Training context",
   data_gap: "Data gap",

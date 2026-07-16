@@ -9,9 +9,23 @@ import { ForceTimeSeries } from "../calc/signal";
 import { computeCmj, computeDropJumpRsi } from "../calc/cmj";
 import { computeImtp } from "../calc/imtp";
 import { asymmetryIndex, ASYM_METHOD_VERSION } from "../calc/asymmetry";
-import { metricDef, ASYMMETRY_SOURCE_METRICS } from "../config/metrics";
+import { cmjEventMarkers, imtpEventMarkers } from "../calc/curve";
+import { metricDef, ASYMMETRY_SOURCE_METRICS, IMTP_FORCE_POINT_KEYS } from "../config/metrics";
 import { checkSanity } from "../calc/signal";
 import { isValidSide, VALID_SIDES } from "./adapter";
+
+/**
+ * Persist the event markers (ms from recording start) used to align this
+ * trial's official metrics — derived from the SAME full-rate detection run
+ * above, never recomputed later from the lower-rate display waveform.
+ * Historical trials imported before this existed keep a NULL value; they are
+ * never backfilled (see docs/METHODOLOGY.md future curve-workspace notes).
+ */
+function setTrialEventMarkers(facilityId: string, trialId: string, markers: unknown): void {
+  getDb()
+    .prepare(`UPDATE trial SET event_markers_json = ? WHERE facility_id = ? AND id = ?`)
+    .run(JSON.stringify(markers), facilityId, trialId);
+}
 
 export interface MetricInsert {
   metricType: string;
@@ -99,11 +113,14 @@ export function computeTrialMetrics(
       put({ metricType: "cmj_peak_propulsive_force", side: "left", value: r.peakPropulsiveForceLeftN, trialId, methodVersion: v });
       put({ metricType: "cmj_peak_propulsive_force", side: "right", value: r.peakPropulsiveForceRightN, trialId, methodVersion: v });
     }
+    put({ metricType: "cmj_time_to_takeoff", side: "bilateral", value: r.timeToTakeoffS * 1000, trialId, methodVersion: v });
+    setTrialEventMarkers(facilityId, trialId, cmjEventMarkers(r, series.hz));
   } else if (testType === "imtp") {
     const r = computeImtp(series);
     const v = r.methodVersion;
     put({ metricType: "imtp_peak_force", side: "bilateral", value: r.peakForceN, trialId, methodVersion: v });
     put({ metricType: "imtp_relative_force", side: "bilateral", value: r.relativeForceNkg, trialId, methodVersion: v });
+    put({ metricType: "imtp_time_to_peak_force", side: "bilateral", value: r.timeToPeakForceMs, trialId, methodVersion: v });
     put({ metricType: "imtp_rfd_0_50", side: "bilateral", value: r.rfd0_50, trialId, methodVersion: v });
     put({ metricType: "imtp_rfd_50_150", side: "bilateral", value: r.rfd50_150, trialId, methodVersion: v });
     if (Number.isFinite(r.rfd150_250)) {
@@ -113,6 +130,19 @@ export function computeTrialMetrics(
       put({ metricType: "imtp_peak_force", side: "left", value: r.peakForceLeftN, trialId, methodVersion: v });
       put({ metricType: "imtp_peak_force", side: "right", value: r.peakForceRightN, trialId, methodVersion: v });
     }
+    // Fixed-time force points — absolute force AT each time point (never a
+    // slope/RFD). Bilateral + relative always inserted when the point falls
+    // within the trial; per-side rows only when dual-plate data exists.
+    for (const point of r.forcePoints) {
+      const key = IMTP_FORCE_POINT_KEYS[point.ms];
+      put({ metricType: key, side: "bilateral", value: point.forceN, trialId, methodVersion: v });
+      put({ metricType: `${key}_rel`, side: "bilateral", value: point.forceN / r.bodyMassKg, trialId, methodVersion: v });
+      if (point.forceLeftN !== undefined && point.forceRightN !== undefined) {
+        put({ metricType: key, side: "left", value: point.forceLeftN, trialId, methodVersion: v });
+        put({ metricType: key, side: "right", value: point.forceRightN, trialId, methodVersion: v });
+      }
+    }
+    setTrialEventMarkers(facilityId, trialId, imtpEventMarkers(r, series.hz));
   } else if (testType === "drop_jump") {
     const r = computeDropJumpRsi(series);
     put({ metricType: "dj_rsi", side: "bilateral", value: r.rsi, trialId, methodVersion: r.methodVersion });

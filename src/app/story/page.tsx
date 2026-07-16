@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * Case Study — demo/private placeholder content only. Uses the seeded demo
- * athlete's synthetic data; no real athlete identity or clinical detail.
+ * athlete's synthetic data; no real athlete identity or personal detail.
  */
 export default async function StoryPage() {
   const facility = await currentFacility();
@@ -42,7 +42,7 @@ export default async function StoryPage() {
         <div className="eyebrow">Case Study · demo placeholder content</div>
         <h1 style={{ fontSize: 36 }}>Ten months in force–time</h1>
         <div className="sub" style={{ maxWidth: 640 }}>
-          How one athlete&apos;s measured data moved through a season, an injury, and a staged return — told
+          How one athlete&apos;s measured data moved through a season, a training interruption, and a staged progression — told
           entirely by the same schema, calculations, and findings that power the dashboard.
         </div>
       </div>
@@ -50,14 +50,14 @@ export default async function StoryPage() {
       <div className="callout" data-tone="error" style={{ marginBottom: 18 }}>
         <strong style={{ color: "var(--ink)" }}>This is placeholder demo content, not a real case study.</strong>{" "}
         “{flagship.display_name}” is an invented, anonymized demo identity with entirely synthetic
-        force-plate signals — there is no real athlete, no real injury, and no real recovery behind this page.
+        force-plate signals — there is no real athlete, no real training interruption, and no real journey behind this page.
         The schema, calculations, and Findings shown are the platform&apos;s real engine; the person, story, and
-        clinical details are not. Any future real case study — including a real anchor-athlete recovery
+        timeline details are not. Any future real case study — including a real anchor-athlete recovery
         narrative — would only appear here after that athlete&apos;s own explicit written consent (a
         permission record with scope{" "}
         <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>demo_display</code>, as modeled here),
         with their own words, their own photos (never fabricated), and never presented as, or adjacent to, a
-        clinical claim.
+        medical or readiness claim.
       </div>
 
       <div className="panel">
@@ -88,10 +88,10 @@ export default async function StoryPage() {
         <div className="eyebrow" style={{ color: "var(--stage)" }}>Chapter 2 · The gap</div>
         <h2>What the platform did NOT say</h2>
         <p style={{ color: "var(--ink-dim)", fontSize: 13.5, maxWidth: 680 }}>
-          In January the record shows an injury milestone, then silence — eight weeks with no tests. The
+          In January the record shows a training-interruption milestone, then silence — eight weeks with no tests. The
           platform&apos;s only statement about that period is a data gap. No inference, no projection, no
-          risk score: the injury details live with the clinical team, and the first post-surgery numbers
-          appear only when the rehab lead cleared testing (a human decision, recorded as a clinical note).
+          risk score: whatever happened lives with the athlete&apos;s own support team, and the first post-interruption numbers
+          appear only when that team resumed testing (a human decision, recorded as a practitioner note).
         </p>
       </div>
 

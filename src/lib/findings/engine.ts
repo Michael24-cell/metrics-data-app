@@ -339,7 +339,7 @@ function rtsFindings(facilityId: string, athleteId: string): number {
         id: c.id,
         label: c.label,
         met: null,
-        observed: c.note ?? "Documented by the clinical/performance team; not evaluated by this platform.",
+        observed: c.note ?? "Documented by the athlete's performance team; not evaluated by this platform.",
         target: "n/a — practitioner-attested",
         kind: "context",
       });
@@ -357,7 +357,7 @@ function rtsFindings(facilityId: string, athleteId: string): number {
       if (!involvedSide) {
         evidence.push({
           id: c.id, label: c.label, met: null,
-          observed: "involved side not recorded on the injury record",
+          observed: "involved side not recorded on the training-interruption record",
           target: `${operator} ${target}${unit}`,
         });
         continue;
@@ -415,14 +415,14 @@ function rtsFindings(facilityId: string, athleteId: string): number {
         if (pre.length < 3) {
           evidence.push({
             id: c.id, label: c.label, met: null,
-            observed: `only ${pre.length} pre-injury sessions — pre-injury baseline not computable`,
-            target: `${operator} ${target}% of pre-injury baseline`,
+            observed: `only ${pre.length} pre-interruption sessions — reference baseline not computable`,
+            target: `${operator} ${target}% of reference baseline`,
           });
           continue;
         }
         const baseMean = mean(pre.map((s) => s.value));
         observedVal = (latest.value / baseMean) * 100;
-        targetDesc = `${operator} ${target}% of pre-injury baseline (${fmt(baseMean, def.precision)} ${def.unit}, n=${pre.length})`;
+        targetDesc = `${operator} ${target}% of reference baseline (${fmt(baseMean, def.precision)} ${def.unit}, n=${pre.length})`;
         met = operator === ">=" ? observedVal >= target : observedVal <= target;
         evidence.push({
           id: c.id, label: c.label, met,
@@ -453,11 +453,11 @@ function rtsFindings(facilityId: string, athleteId: string): number {
   insertFinding(facilityId, athleteId, {
     category: "rts_stage_status",
     severity: "info",
-    headline: `Stage ${current.stage_number} (“${current.name}”): ${metCount} of ${total} practitioner-defined criteria currently met${contextCount > 0 ? ` (+${contextCount} item${contextCount === 1 ? "" : "s"} documented by the clinical/performance team, tracked separately)` : ""}`,
-    detail: `ILLUSTRATIVE DEMO PROTOCOL — this stage/criteria set is placeholder content built to demonstrate the platform's capability, not a verified real clinical protocol for any real athlete. Criteria status for ${protocol.name} (v${protocol.version}), defined by ${protocol.defined_by}. This is measured evidence against practitioner-set targets — stage progression and return decisions remain with the clinical and performance team.${
+    headline: `Stage ${current.stage_number} (“${current.name}”): ${metCount} of ${total} practitioner-defined criteria currently met${contextCount > 0 ? ` (+${contextCount} item${contextCount === 1 ? "" : "s"} documented by the athlete's performance team, tracked separately)` : ""}`,
+    detail: `ILLUSTRATIVE DEMO PROTOCOL — this stage/criteria set is placeholder content built to demonstrate the platform's capability, not any real athlete's actual progression plan. Criteria status for ${protocol.name} (v${protocol.version}), defined by ${protocol.defined_by}. This is measured evidence against practitioner-set targets — progression decisions remain with the athlete's qualified performance and support team.${
       pendingData > 0 ? ` ${pendingData} criteri${pendingData === 1 ? "on" : "a"} lack sufficient data and are shown as “insufficient data”, not as met.` : ""
     }${
-      contextCount > 0 ? ` ${contextCount} additional criteri${contextCount === 1 ? "on is" : "a are"} practitioner-attested (e.g. range of motion, pain/swelling, tests this platform does not compute) and ${contextCount === 1 ? "is" : "are"} shown as documented separately, not evaluated here.` : ""
+      contextCount > 0 ? ` ${contextCount} additional criteri${contextCount === 1 ? "on is" : "a are"} practitioner-attested (e.g. range of motion, movement comfort, tests this platform does not compute) and ${contextCount === 1 ? "is" : "are"} shown as documented separately, not evaluated here.` : ""
     }`,
     refs: {
       protocolId: protocol.id,

@@ -65,6 +65,7 @@ export interface TrialRow {
   session_id: string;
   trial_number: number;
   waveform_json: string | null;
+  event_markers_json: string | null;
   quality_flag: string | null;
   raw_meta_json: string | null;
 }

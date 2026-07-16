@@ -12,6 +12,16 @@ export function getDb(): DatabaseSync {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   _db = new DatabaseSync(DB_PATH);
   _db.exec(SCHEMA_SQL);
+  // Additive column for a pre-existing on-disk database created before this
+  // column existed. CREATE TABLE IF NOT EXISTS above does not add columns to
+  // an already-existing table, so this guards that case. A reseed (not this
+  // guard) is what actually populates the column for demo data — this only
+  // prevents a hard crash on an older db file.
+  try {
+    _db.exec(`ALTER TABLE trial ADD COLUMN event_markers_json TEXT`);
+  } catch {
+    /* column already exists — expected on any db created with the current schema */
+  }
   return _db;
 }
 

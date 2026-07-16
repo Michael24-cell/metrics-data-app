@@ -23,7 +23,23 @@ services (roster, trends, asymmetry, baseline, report builder)
         ▼
 surfaces (Roster, Athlete Overview, Session Detail, Progress, Report, Story, Import)
    and API routes (/api/…) — same services, same data
+        ▼
+intelligence agent (src/lib/agent) — read-only tools over the layers above;
+   explains evidence, never recalculates or decides
 ```
+
+## Intelligence agent (`src/lib/agent`)
+
+A four-stage, stateless, server-side workflow (`runner.ts`):
+
+1. **Deterministic intake** — scope check, data-completeness snapshot, input snapshot hash.
+2. **One bounded Evidence Agent** — 13 read-only tools (`tools.ts`), each zod-validated and bound to a single facility + athlete at executor creation (tool inputs cannot name an athlete or facility). In `scripted` mode a deterministic composer (`scripted.ts`) runs the tools; in `live` mode a real model does (`live.ts`: server-only key, per-request timeout + total AbortController deadline, hard tool-step max, structured submit-tool output validated with zod, injectable transport for mocked contract tests, any failure → safe fallback to scripted).
+3. **Deterministic post-generation evaluation** (`evals.ts`) — 10 checks (schema, prohibited language, evidence presence/resolvability/scope, numeric fidelity against cited evidence, comparability enforcement, baseline distinction, quality disclosure, no verdict aggregation) → pass/warn/fail gates the UI.
+4. **Human review** — approve / edit / reject / needs-more-data in the UI; edits create a separate `ReviewRecord` and the original generated report is never mutated. Runs and reviews persist in the browser (localStorage) — route handlers may restart or run in separate instances, so no server-process memory is trusted.
+
+Key contracts: deterministic claim IDs (`claims.ts` — sha256 of claim type + metric + comparison window + sorted evidence IDs, so report diffs stay stable when wording changes), a comparability gate (`comparability.ts` — no trend narration across mixed test types/method versions/devices/units), a report differ keyed on claim identity (`diff.ts`), and an evidence resolver (`evidence.ts`) that resolves every citable ID within the athlete's scope for the evidence explorer. Practitioner notes are treated as untrusted text: quoted as data, never followed as instructions. The trace shown in the UI contains tool calls, inputs, results, and durations — never model chain-of-thought.
+
+Mode names are honest: `fixture` = frozen test expectations; `scripted` = deterministic tool execution over current synthetic data (not a "replay" of anything); `live` = real model tool calling. A future `replay` mode would mean captured, sanitized live runs — it does not exist yet and nothing is labeled that way.
 
 ## Key decisions
 

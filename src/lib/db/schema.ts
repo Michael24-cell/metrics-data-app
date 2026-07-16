@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS trial (
   trial_number INTEGER NOT NULL,
   raw_meta_json TEXT,                            -- adapter-specific raw metadata
   waveform_json TEXT,                            -- downsampled display waveform {hz, force, left?, right?}
+  event_markers_json TEXT,                       -- full-rate-derived alignment markers {kind, methodVersion, ...msFields}; NULL for trials predating this contract or test types with no defined events — never backfilled
   quality_flag TEXT,                             -- null | warning text
   created_at TEXT NOT NULL
 );

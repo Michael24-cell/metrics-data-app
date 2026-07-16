@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 /**
  * Athlete-facing progress view: the athlete's own data in plain language.
  * Same data layer as the practitioner surfaces — simplified, never sugarcoated,
- * and free of clinical detail beyond what practitioners entered for sharing.
+ * and free of detail beyond what practitioners entered for sharing.
  */
 export default async function ProgressPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -86,10 +86,10 @@ export default async function ProgressPage({ params }: { params: Promise<{ id: s
 
       {protocol && currentStage && stageRefs?.criteria && (
         <div className="panel">
-          <h2>Where you are in your return plan</h2>
+          <h2>Where you are in your progression plan</h2>
           <p className="panel-sub">
-            <strong style={{ color: "var(--watch)" }}>Demo content</strong> — this return plan is placeholder
-            content built to show how the page works, not a real clinical protocol. In a real deployment, you
+            <strong style={{ color: "var(--watch)" }}>Demo content</strong> — this progression plan is placeholder
+            content built to show how the page works, not any real athlete’s actual plan. In a real deployment, you
             are in stage {currentStage.stage_number} of {stages.length}: “{currentStage.name}”. These would be
             the measured targets your team set for this stage — your team decides when to progress, using
             these numbers plus everything else they know about you.
