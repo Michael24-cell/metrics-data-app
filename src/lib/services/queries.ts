@@ -24,9 +24,16 @@ import {
   FindingRow,
 } from "../db/dal";
 import { getDb } from "../db/db";
-import { METRICS, metricDef, ASYMMETRY_SOURCE_METRICS, BASELINE_MONITORED_METRICS } from "../config/metrics";
+import {
+  METRICS,
+  metricDef,
+  ASYMMETRY_SOURCE_METRICS,
+  BASELINE_MONITORED_METRICS,
+  IMTP_FORCE_POINT_KEYS,
+} from "../config/metrics";
 import { monitorBaseline, DEFAULT_BASELINE_CONFIG } from "../calc/baseline";
-import { ASYM_METHOD_VERSION } from "../calc/asymmetry";
+import { ASYM_METHOD_VERSION, directionChanges } from "../calc/asymmetry";
+import { buildForceWindowRow, ForceWindowRow } from "../calc/forceWindow";
 
 export interface RosterEntry {
   id: string;
@@ -148,6 +155,8 @@ export function asymmetryTrend(
   watchPct: number;
   flagPct: number;
   points: AsymmetryPoint[];
+  /** left↔right flips across the returned history; null when < 2 points */
+  sideChanges: number | null;
 } {
   let sql = `
     SELECT m.session_id as sessionId, s.session_date as date, m.value
@@ -182,6 +191,42 @@ export function asymmetryTrend(
     watchPct: getThreshold(facilityId, "asymmetry_watch_pct")?.value ?? 10,
     flagPct: getThreshold(facilityId, "asymmetry_flag_pct")?.value ?? 15,
     points,
+    sideChanges: points.length >= 2 ? directionChanges(points) : null,
+  };
+}
+
+/**
+ * IMTP Force 0–300 ms window summary — one row per fixed time point, built
+ * from persisted official metric rows (absolute, relative, per-side and
+ * asymmetry-index series). Cross-series alignment rules live in
+ * calc/forceWindow.ts; this service only queries and delegates.
+ */
+export function imtpForceWindowSummary(
+  facilityId: string,
+  athleteId: string,
+  range: { from?: string; to?: string } = {}
+): { rows: ForceWindowRow[]; latestDate: string | null; watchPct: number; flagPct: number } {
+  const rows = Object.entries(IMTP_FORCE_POINT_KEYS).map(([msStr, key]) => {
+    const asym = asymmetryTrend(facilityId, athleteId, key, range);
+    return buildForceWindowRow({
+      ms: Number(msStr),
+      metricKey: key,
+      abs: sessionBestSeries(facilityId, athleteId, key, "bilateral", range),
+      rel: sessionBestSeries(facilityId, athleteId, `${key}_rel`, "bilateral", range),
+      left: sessionBestSeries(facilityId, athleteId, key, "left", range),
+      right: sessionBestSeries(facilityId, athleteId, key, "right", range),
+      asymmetry: asym.points,
+    });
+  });
+  const latestDate = rows.reduce<string | null>(
+    (acc, r) => (r.latestDate && (!acc || r.latestDate > acc) ? r.latestDate : acc),
+    null
+  );
+  return {
+    rows,
+    latestDate,
+    watchPct: getThreshold(facilityId, "asymmetry_watch_pct")?.value ?? 10,
+    flagPct: getThreshold(facilityId, "asymmetry_flag_pct")?.value ?? 15,
   };
 }
 

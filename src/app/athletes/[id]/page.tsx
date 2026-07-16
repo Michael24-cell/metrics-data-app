@@ -8,8 +8,17 @@ import {
   baselineSeries,
   findingsWithAnnotations,
   facilityFilterOptions,
+  imtpForceWindowSummary,
 } from "@/lib/services/queries";
-import { METRICS, TEST_TYPES, BASELINE_MONITORED_METRICS, ASYMMETRY_SOURCE_METRICS, metricDef } from "@/lib/config/metrics";
+import {
+  TEST_TYPES,
+  METRIC_GROUPS,
+  BASELINE_MONITORED_METRICS,
+  primaryMetricsForTest,
+  advancedMetricsForTest,
+  defaultMetricForTest,
+  metricDef,
+} from "@/lib/config/metrics";
 import TrendChart from "@/components/charts/TrendChart";
 import AsymmetryChart from "@/components/charts/AsymmetryChart";
 import FilterBar from "@/components/FilterBar";
@@ -36,41 +45,84 @@ export default async function AthletePage({
   const options = facilityFilterOptions(facility.id);
   const range = { from: sp.from, to: sp.to };
 
-  const selectedMetric = sp.metric && METRICS[sp.metric] ? sp.metric : "cmj_jump_height";
-  const def = metricDef(selectedMetric);
-  const trend = metricTrend(facility.id, id, selectedMetric, "bilateral", range);
+  /* ---- test-first selection: the test determines everything below it ---- */
+  const testsUsed = new Set(sessions.map((s) => s.test_type));
+  const availableTests = Object.keys(TEST_TYPES).filter((k) => k !== "derived" && testsUsed.has(k));
+  const selectedTest =
+    sp.test && availableTests.includes(sp.test)
+      ? sp.test
+      : availableTests.includes("cmj")
+        ? "cmj"
+        : (availableTests[0] ?? null);
 
-  const monitored = BASELINE_MONITORED_METRICS.includes(selectedMetric);
-  const baseline = monitored ? baselineSeries(facility.id, id, selectedMetric, range) : null;
+  const selectorEntries = selectedTest ? primaryMetricsForTest(selectedTest) : [];
+  const configuredDefault = selectedTest ? defaultMetricForTest(selectedTest) : undefined;
+  const defaultEntryKey =
+    configuredDefault && selectorEntries.some((e) => e.key === configuredDefault)
+      ? configuredDefault
+      : selectorEntries[0]?.key;
+  const selectedEntry =
+    selectorEntries.find((e) => e.key === sp.metric) ??
+    selectorEntries.find((e) => e.key === defaultEntryKey) ??
+    null;
+
+  /* ---- selected-metric data (single metric) ---- */
+  const selDef = selectedEntry?.kind === "metric" ? metricDef(selectedEntry.key) : null;
+  const trend = selDef ? metricTrend(facility.id, id, selDef.key, "bilateral", range) : null;
+  const normDef = selDef?.normalizedKey ? metricDef(selDef.normalizedKey) : null;
+  const normTrend = normDef ? metricTrend(facility.id, id, normDef.key, "bilateral", range) : null;
+  const monitored = selDef ? BASELINE_MONITORED_METRICS.includes(selDef.key) : false;
+  const baseline = selDef && monitored ? baselineSeries(facility.id, id, selDef.key, range) : null;
   const flaggedDates = baseline?.points.filter((p) => p.flag !== "none").map((p) => p.date) ?? [];
+  const metricAsym =
+    selDef?.asymmetryEligible ? asymmetryTrend(facility.id, id, selDef.key, range) : null;
 
-  const asymSource = sp.asym && ASYMMETRY_SOURCE_METRICS.includes(sp.asym) ? sp.asym : ASYMMETRY_SOURCE_METRICS[0];
-  const asym = asymmetryTrend(facility.id, id, asymSource, range);
+  /* ---- selected-group data (IMTP Force 0–300 ms) ---- */
+  const group = selectedEntry?.kind === "group" ? METRIC_GROUPS[selectedEntry.key] : null;
+  const forceWindow = group ? imtpForceWindowSummary(facility.id, id, range) : null;
+  const pointKey =
+    group && sp.point && group.memberKeys.includes(sp.point) ? sp.point : group?.defaultMemberKey;
+  const pointDef = pointKey ? metricDef(pointKey) : null;
+  const pointTrend = pointDef ? metricTrend(facility.id, id, pointDef.key, "bilateral", range) : null;
+  const pointRelDef = pointDef?.normalizedKey ? metricDef(pointDef.normalizedKey) : null;
+  const pointRelTrend = pointRelDef ? metricTrend(facility.id, id, pointRelDef.key, "bilateral", range) : null;
+  const pointAsym = pointDef ? asymmetryTrend(facility.id, id, pointDef.key, range) : null;
+
+  /* ---- advanced metrics for this test (RFD etc), excluding grouped members ---- */
+  const advanced = selectedTest
+    ? advancedMetricsForTest(selectedTest).filter((m) => !m.group && m.trendEligible && m.status === "implemented")
+    : [];
+  const advancedTrends = advanced.map((d) => ({ def: d, trend: metricTrend(facility.id, id, d.key, "bilateral", range) }));
+
+  /* ---- key numbers for the selected test (one per selector entry) ---- */
+  const latestOf = (metricType: string) => {
+    const t = metricTrend(facility.id, id, metricType, "bilateral", range);
+    return t.points.length ? t.points[t.points.length - 1] : null;
+  };
+  const statTiles = selectorEntries.map((e) => {
+    const key = e.kind === "group" ? METRIC_GROUPS[e.key].defaultMemberKey : e.key;
+    const d = metricDef(key);
+    return { entry: e, def: d, latest: latestOf(key), label: e.kind === "group" ? d.shortLabel : e.label };
+  });
 
   const findings = findingsWithAnnotations(facility.id, id);
   const stageFinding = findings.find((f) => f.finding.category === "rts_stage_status");
   const stageRefs = stageFinding ? (JSON.parse(stageFinding.finding.refs_json) as FindingRefs) : null;
 
-  const rfd = (["imtp_rfd_0_50", "imtp_rfd_50_150", "imtp_rfd_150_250"] as const).map((k) => ({
-    def: METRICS[k],
-    trend: metricTrend(facility.id, id, k, "bilateral", range),
-  }));
-
-  const testTypesUsed = [...new Set(sessions.map((s) => s.test_type))];
   const filteredSessions = sessions
-    .filter((s) => !sp.test || s.test_type === sp.test)
+    .filter((s) => !selectedTest || s.test_type === selectedTest)
     .filter((s) => (!sp.from || s.session_date >= sp.from) && (!sp.to || s.session_date <= sp.to));
 
-  const latest = (metricType: string) => {
-    const t = metricTrend(facility.id, id, metricType);
-    return t.points.length ? t.points[t.points.length - 1] : null;
-  };
-  const latestJump = latest("cmj_jump_height");
-  const latestMrsi = latest("cmj_mrsi");
-  const latestImtpRel = latest("imtp_relative_force");
-  const latestDj = latest("dj_rsi");
-
   const trainingRecent = training.slice(-30);
+
+  const href = (patch: Record<string, string | undefined>) => {
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries({ ...sp, ...patch })) if (v != null && v !== "") next[k] = v;
+    return `?${new URLSearchParams(next).toString()}`;
+  };
+
+  const fmt = (v: number | null, d: { precision: number; unit: string }) =>
+    v == null ? "—" : v.toFixed(d.precision);
 
   return (
     <main className="page">
@@ -97,45 +149,257 @@ export default async function AthletePage({
       </div>
 
       <Suspense>
-        <FilterBar
-          options={{
-            athletes: options.athletes,
-            metrics: options.metrics.filter((m) => m.status === "implemented"),
-            testTypes: testTypesUsed.map((t) => TEST_TYPES[t]).filter(Boolean),
-            show: ["athlete", "metric", "testType", "range"],
-          }}
-        />
+        <FilterBar options={{ athletes: options.athletes, show: ["athlete", "range"] }} />
       </Suspense>
 
-      <div className="statrow" style={{ marginBottom: 16 }}>
-        <div className="stat">
-          <div className="k">Jump height</div>
-          <div className="v">{latestJump ? latestJump.value.toFixed(1) : "—"}<small>cm</small></div>
-          <div className="d">{latestJump?.date ?? "no data"}</div>
+      {availableTests.length === 0 && (
+        <div className="callout">
+          No test sessions recorded for this athlete yet. Analysis appears here once a testing session is imported.
         </div>
-        <div className="stat">
-          <div className="k">mRSI</div>
-          <div className="v">{latestMrsi ? latestMrsi.value.toFixed(2) : "—"}<small>m/s</small></div>
-          <div className="d">{latestMrsi?.date ?? "no data"}</div>
-        </div>
-        <div className="stat">
-          <div className="k">IMTP rel. force</div>
-          <div className="v">{latestImtpRel ? latestImtpRel.value.toFixed(1) : "—"}<small>N/kg</small></div>
-          <div className="d">{latestImtpRel?.date ?? "no data"}</div>
-        </div>
-        <div className="stat">
-          <div className="k">DJ RSI</div>
-          <div className="v">{latestDj ? latestDj.value.toFixed(2) : "—"}</div>
-          <div className="d">{latestDj?.date ?? "no data"}</div>
-        </div>
-        <div className="stat">
-          <div className="k">Asymmetry ({METRICS[asymSource].shortLabel})</div>
-          <div className="v">
-            {asym.points.length ? asym.points[asym.points.length - 1].value.toFixed(1) : "—"}<small>%</small>
+      )}
+
+      {selectedTest && (
+        <div className="panel" style={{ paddingBottom: 12 }}>
+          <div className="chart-head" style={{ marginBottom: 6 }}>
+            <h2 style={{ marginRight: "auto" }}>Analysis</h2>
+            <div className="toggle no-print" aria-label="select test">
+              {availableTests.map((t) => (
+                <a key={t} href={href({ test: t, metric: undefined, point: undefined })}>
+                  <button data-on={t === selectedTest}>{TEST_TYPES[t].label}</button>
+                </a>
+              ))}
+            </div>
           </div>
-          <div className="d">watch ≥{asym.watchPct}% · flag ≥{asym.flagPct}%</div>
+          <p className="panel-sub" style={{ marginBottom: 8 }}>
+            Pick the test first — the metrics, trends and side-to-side analysis below are the ones this test
+            legitimately supports.
+          </p>
+          {selectorEntries.length > 0 ? (
+            <div className="toggle no-print" aria-label="select metric" style={{ flexWrap: "wrap" }}>
+              {selectorEntries.map((e) => (
+                <a key={e.key} href={href({ metric: e.key, point: undefined })}>
+                  <button data-on={selectedEntry?.key === e.key}>{e.label}</button>
+                </a>
+              ))}
+            </div>
+          ) : (
+            <div className="callout">No trainer-facing metrics are registered for this test yet.</div>
+          )}
         </div>
-      </div>
+      )}
+
+      {selectedTest && statTiles.length > 0 && (
+        <div className="statrow" style={{ marginBottom: 16 }}>
+          {statTiles.map(({ entry, def: d, latest, label }) => (
+            <div className="stat" key={entry.key}>
+              <div className="k">{label}</div>
+              <div className="v">
+                {latest ? latest.value.toFixed(d.precision) : "—"}
+                {d.unit && <small>{d.unit}</small>}
+              </div>
+              <div className="d">{latest?.date ?? "no data"}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ---------------- single-metric analysis ---------------- */}
+
+      {selDef && (
+        <div className="panel">
+          <h2>Longitudinal trend — {selDef.label}</h2>
+          <p className="panel-sub">
+            Session-best values{monitored ? " with benchmark mean and rolling ±1 SD normal band" : ""}.
+            {monitored ? " Red points mark sessions flagged by the deviation rule." : ""} Milestones from this
+            athlete&apos;s record.
+          </p>
+          {trend && trend.points.length > 0 ? (
+            <TrendChart
+              points={trend.points}
+              label={selDef.shortLabel}
+              unit={selDef.unit}
+              precision={selDef.precision}
+              band={baseline?.points.map((p) => ({ date: p.date, low: p.bandLow, high: p.bandHigh }))}
+              baselineMean={baseline?.baselineMean}
+              thresholdLines={trend.thresholds}
+              milestones={milestones}
+              flaggedDates={flaggedDates}
+              sessionLinkBase="/sessions"
+              interpretation={selDef.interpretation}
+              height={280}
+            />
+          ) : (
+            <div className="callout">
+              No {selDef.shortLabel} values in the selected date range. Widen the range or run a{" "}
+              {TEST_TYPES[selectedTest!].label} session.
+            </div>
+          )}
+          {baseline && !baseline.sufficientBaseline && trend && trend.points.length > 0 && (
+            <div className="callout" style={{ marginTop: 10 }}>
+              Baseline not yet established: {trend.points.length} of {baseline.config.minBenchmarkSessions} benchmark
+              sessions. The normal band and deviation flags activate once the benchmark window is complete.
+            </div>
+          )}
+        </div>
+      )}
+
+      {selDef && normDef && normTrend && normTrend.points.length > 0 && (
+        <div className="panel">
+          <h2>Body-mass normalized — {normDef.label}</h2>
+          <p className="panel-sub">{normDef.description}</p>
+          <TrendChart
+            points={normTrend.points}
+            label={normDef.shortLabel}
+            unit={normDef.unit}
+            precision={normDef.precision}
+            thresholdLines={normTrend.thresholds}
+            interpretation={normDef.interpretation}
+            height={200}
+          />
+        </div>
+      )}
+
+      {selDef?.asymmetryEligible && metricAsym && (
+        <div className="panel">
+          <h2>Side-to-side — {selDef.shortLabel}</h2>
+          <p className="panel-sub">
+            {metricAsym.points.length > 0 ? (
+              <>
+                Latest asymmetry {metricAsym.points[metricAsym.points.length - 1].value.toFixed(1)}%
+                {" · "}stronger side: {metricAsym.points[metricAsym.points.length - 1].strongerSide}
+                {metricAsym.sideChanges != null && <>{" · "}stronger side changed {metricAsym.sideChanges}× in this range</>}
+                {" · "}watch ≥{metricAsym.watchPct}% · flag ≥{metricAsym.flagPct}%
+              </>
+            ) : (
+              "Side-to-side analysis needs dual-plate (left/right) data for this metric."
+            )}
+          </p>
+          {metricAsym.points.length > 0 && (
+            <AsymmetryChart
+              points={metricAsym.points}
+              watchPct={metricAsym.watchPct}
+              flagPct={metricAsym.flagPct}
+              sourceLabel={selDef.label}
+            />
+          )}
+        </div>
+      )}
+
+      {/* ---------------- IMTP Force 0–300 ms group analysis ---------------- */}
+
+      {group && forceWindow && (
+        <div className="panel">
+          <h2>Force 0–300 ms — early force production</h2>
+          <p className="panel-sub">
+            Absolute force at fixed instants after IMTP force onset, from persisted official metric values
+            (not re-read from the display waveform).{" "}
+            {forceWindow.latestDate
+              ? `Latest session: ${forceWindow.latestDate}. Side values and asymmetry appear only where genuine left/right plate data exists.`
+              : "No IMTP force-point data recorded in the selected range."}
+          </p>
+          {forceWindow.latestDate ? (
+            <div style={{ overflowX: "auto" }}>
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Time point</th>
+                    <th className="num">Force (N)</th>
+                    <th className="num">N/kg</th>
+                    <th className="num">Left (N)</th>
+                    <th className="num">Right (N)</th>
+                    <th className="num">Asym %</th>
+                    <th>Stronger side</th>
+                    <th className="num">Side changes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {forceWindow.rows.map((r) => (
+                    <tr key={r.ms} style={r.metricKey === pointKey ? { background: "var(--panel-2, rgba(127,127,127,0.08))" } : undefined}>
+                      <td>{r.ms} ms</td>
+                      <td className="num">{fmt(r.absN, { precision: 0, unit: "N" })}</td>
+                      <td className="num">{fmt(r.relNkg, { precision: 2, unit: "N/kg" })}</td>
+                      <td className="num">{fmt(r.leftN, { precision: 0, unit: "N" })}</td>
+                      <td className="num">{fmt(r.rightN, { precision: 0, unit: "N" })}</td>
+                      <td className="num">{r.asymmetryPct == null ? "—" : r.asymmetryPct.toFixed(1)}</td>
+                      <td>{r.strongerSide ?? "—"}</td>
+                      <td className="num">{r.sideChanges == null ? "—" : r.sideChanges}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="callout">
+              Force 0–300 ms values appear after an IMTP session with a detected force onset is imported.
+            </div>
+          )}
+          {forceWindow.latestDate && (
+            <div style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 8 }}>
+              Side changes count how many times the stronger side flipped left↔right across the sessions in the
+              selected range; “—” means fewer than two sessions with left/right data.
+            </div>
+          )}
+        </div>
+      )}
+
+      {group && pointDef && pointTrend && (
+        <div className="panel">
+          <div className="chart-head" style={{ marginBottom: 2 }}>
+            <h2 style={{ marginRight: "auto" }}>Trend — {pointDef.label}</h2>
+            <div className="toggle no-print" aria-label="select time point">
+              {forceWindow!.rows.map((r) => (
+                <a key={r.ms} href={href({ point: r.metricKey })}>
+                  <button data-on={r.metricKey === pointKey}>{r.ms}ms</button>
+                </a>
+              ))}
+            </div>
+          </div>
+          <p className="panel-sub">{pointDef.description}</p>
+          {pointTrend.points.length > 0 ? (
+            <div className="grid2">
+              <TrendChart
+                points={pointTrend.points}
+                label={pointDef.shortLabel}
+                unit={pointDef.unit}
+                precision={pointDef.precision}
+                thresholdLines={pointTrend.thresholds}
+                height={200}
+              />
+              {pointRelDef && pointRelTrend && pointRelTrend.points.length > 0 && (
+                <TrendChart
+                  points={pointRelTrend.points}
+                  label={pointRelDef.shortLabel}
+                  unit={pointRelDef.unit}
+                  precision={pointRelDef.precision}
+                  height={200}
+                />
+              )}
+            </div>
+          ) : (
+            <div className="callout">No values for this time point in the selected range.</div>
+          )}
+        </div>
+      )}
+
+      {group && pointDef && pointAsym && pointAsym.points.length > 0 && (
+        <div className="panel">
+          <h2>Side-to-side — {pointDef.shortLabel}</h2>
+          <p className="panel-sub">
+            Latest asymmetry {pointAsym.points[pointAsym.points.length - 1].value.toFixed(1)}%
+            {" · "}stronger side: {pointAsym.points[pointAsym.points.length - 1].strongerSide}
+            {pointAsym.sideChanges != null && <>{" · "}stronger side changed {pointAsym.sideChanges}× in this range</>}
+            {" · "}watch ≥{pointAsym.watchPct}% · flag ≥{pointAsym.flagPct}%
+          </p>
+          <AsymmetryChart
+            points={pointAsym.points}
+            watchPct={pointAsym.watchPct}
+            flagPct={pointAsym.flagPct}
+            sourceLabel={pointDef.label}
+          />
+        </div>
+      )}
+
+      {/* ---------------- findings + protocol context ---------------- */}
 
       <div className="panel">
         <h2>What changed</h2>
@@ -154,61 +418,6 @@ export default async function AthletePage({
           <div style={{ fontSize: 12, color: "var(--ink-mute)" }}>
             {findings.length - 6} earlier findings appear in the practitioner report.
           </div>
-        )}
-      </div>
-
-      <div className="panel">
-        <h2>Longitudinal trend — {def.label}</h2>
-        <p className="panel-sub">
-          Session-best values{monitored ? " with benchmark mean and rolling ±1 SD normal band" : ""}. Red
-          points mark sessions flagged by the deviation rule. Milestones from this athlete&apos;s record.
-        </p>
-        <TrendChart
-          points={trend.points}
-          label={def.shortLabel}
-          unit={def.unit}
-          precision={def.precision}
-          band={baseline?.points.map((p) => ({ date: p.date, low: p.bandLow, high: p.bandHigh }))}
-          baselineMean={baseline?.baselineMean}
-          thresholdLines={trend.thresholds}
-          milestones={milestones}
-          flaggedDates={flaggedDates}
-          sessionLinkBase="/sessions"
-          interpretation={def.interpretation}
-          height={280}
-        />
-        {baseline && !baseline.sufficientBaseline && (
-          <div className="callout" style={{ marginTop: 10 }}>
-            Baseline not yet established: {trend.points.length} of {baseline.config.minBenchmarkSessions} benchmark
-            sessions. The normal band and deviation flags activate once the benchmark window is complete.
-          </div>
-        )}
-      </div>
-
-      <div className="panel">
-        <div className="chart-head" style={{ marginBottom: 2 }}>
-          <h2 style={{ marginRight: "auto" }}>Asymmetry over time</h2>
-          <div className="toggle no-print">
-            {ASYMMETRY_SOURCE_METRICS.map((m) => (
-              <a key={m} href={`?${new URLSearchParams({ ...spClean(sp), asym: m }).toString()}`}>
-                <button data-on={m === asymSource}>{METRICS[m].shortLabel.toUpperCase()}</button>
-              </a>
-            ))}
-          </div>
-        </div>
-        <p className="panel-sub">
-          {protocol
-            ? "This athlete is on an active staged protocol: limb symmetry is assessed inside the stage criteria below (LSI vs involved side), separately from general asymmetry monitoring."
-            : "General asymmetry monitoring against facility thresholds."}
-        </p>
-        <AsymmetryChart
-          points={asym.points}
-          watchPct={asym.watchPct}
-          flagPct={asym.flagPct}
-          sourceLabel={METRICS[asymSource].label}
-        />
-        {METRICS[asymSource].interpretation && (
-          <div className="interpret-note">{METRICS[asymSource].interpretation}</div>
         )}
       </div>
 
@@ -234,28 +443,36 @@ export default async function AthletePage({
         </div>
       )}
 
-      <div className="panel">
-        <h2>Rate of force development — IMTP phase windows</h2>
-        <p className="panel-sub">
-          Average slope of the force–time curve in each window after onset. The windows carry different
-          training meanings — shown with each chart.
-        </p>
-        <div className="grid3">
-          {rfd.map(({ def: d, trend: t }) => (
-            <div key={d.key}>
-              <TrendChart
-                points={t.points}
-                label={d.shortLabel}
-                unit={d.unit}
-                precision={d.precision}
-                thresholdLines={t.thresholds}
-                height={170}
-                interpretation={d.interpretation}
-              />
-            </div>
-          ))}
-        </div>
-      </div>
+      {advancedTrends.length > 0 && (
+        <details className="panel">
+          <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+            Advanced metrics — {TEST_TYPES[selectedTest!].label} ({advancedTrends.length})
+          </summary>
+          <p className="panel-sub" style={{ marginTop: 8 }}>
+            Specialist measures kept out of the main selector. Windowed rate-of-force-development values carry
+            different training meanings — shown with each chart.
+          </p>
+          <div className="grid3">
+            {advancedTrends.map(({ def: d, trend: t }) => (
+              <div key={d.key}>
+                {t.points.length > 0 ? (
+                  <TrendChart
+                    points={t.points}
+                    label={d.shortLabel}
+                    unit={d.unit}
+                    precision={d.precision}
+                    thresholdLines={t.thresholds}
+                    height={170}
+                    interpretation={d.interpretation}
+                  />
+                ) : (
+                  <div className="callout">{d.shortLabel}: no data in range.</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
 
       {(trainingRecent.length > 0 || lvProfiles.length > 0) && (
         <div className="grid2">
@@ -325,7 +542,10 @@ export default async function AthletePage({
 
       <div className="panel">
         <h2>Test sessions</h2>
-        <p className="panel-sub">{filteredSessions.length} sessions{sp.test ? ` · ${TEST_TYPES[sp.test]?.label}` : ""}. Open a session for the trial-level drill-down.</p>
+        <p className="panel-sub">
+          {filteredSessions.length} sessions{selectedTest ? ` · ${TEST_TYPES[selectedTest]?.label}` : ""}. Open a
+          session for the trial-level drill-down.
+        </p>
         <table className="data">
           <thead>
             <tr><th>Date</th><th>Test</th><th>Notes</th><th></th></tr>
@@ -344,11 +564,4 @@ export default async function AthletePage({
       </div>
     </main>
   );
-}
-
-/** carries existing filters through the asym-source toggle links */
-function spClean(sp: Record<string, string | undefined>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(sp)) if (v != null && k !== "asym") out[k] = v;
-  return out;
 }
