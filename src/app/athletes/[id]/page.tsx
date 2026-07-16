@@ -10,6 +10,7 @@ import {
   facilityFilterOptions,
   imtpForceWindowSummary,
 } from "@/lib/services/queries";
+import { curveWorkspace } from "@/lib/services/curves";
 import {
   TEST_TYPES,
   METRIC_GROUPS,
@@ -20,6 +21,7 @@ import {
   metricDef,
 } from "@/lib/config/metrics";
 import TrendChart from "@/components/charts/TrendChart";
+import CurveWorkspace from "@/components/charts/CurveWorkspace";
 import AsymmetryChart from "@/components/charts/AsymmetryChart";
 import FilterBar from "@/components/FilterBar";
 import FindingCard from "@/components/FindingCard";
@@ -104,6 +106,12 @@ export default async function AthletePage({
     const d = metricDef(key);
     return { entry: e, def: d, latest: latestOf(key), label: e.kind === "group" ? d.shortLabel : e.label };
   });
+
+  /* ---- force-time curve workspace (CMJ/IMTP only) ---- */
+  const curveData =
+    selectedTest && TEST_TYPES[selectedTest].curveEligible
+      ? curveWorkspace(facility.id, id, selectedTest as "cmj" | "imtp", [sp.c1, sp.c2, sp.c3], range)
+      : null;
 
   const findings = findingsWithAnnotations(facility.id, id);
   const stageFinding = findings.find((f) => f.finding.category === "rts_stage_status");
@@ -396,6 +404,21 @@ export default async function AthletePage({
             flagPct={pointAsym.flagPct}
             sourceLabel={pointDef.label}
           />
+        </div>
+      )}
+
+      {/* ---------------- force-time curve workspace ---------------- */}
+
+      {curveData && (
+        <div className="panel">
+          <h2>Force–time curves — {TEST_TYPES[selectedTest!].label}</h2>
+          <p className="panel-sub">
+            Individual attempts and rolling / all-time averages of valid attempts, overlaid on a shared
+            onset-aligned time axis (up to three at once).
+          </p>
+          <Suspense>
+            <CurveWorkspace {...curveData} />
+          </Suspense>
         </div>
       )}
 
