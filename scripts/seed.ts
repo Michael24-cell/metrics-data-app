@@ -683,6 +683,7 @@ interface HooperSpec {
     const cmj: CmjSessionSpec[] = [];
     let d = spec.startDate;
     for (let n = 0; n < spec.cmjSessions; n++) {
+      if (d > TODAY) break; // never seed sessions after the demo's "today"
       const progress = spec.cmjSessions > 1 ? n / (spec.cmjSessions - 1) : 0;
       // optional mid-window dip: gaussian bump centered at progress 0.5
       const dip = spec.dip ? spec.dip * Math.exp(-Math.pow((progress - 0.5) / 0.18, 2)) : 0;
@@ -698,6 +699,7 @@ interface HooperSpec {
     const imtp: ImtpSessionSpec[] = [];
     d = addDays(spec.startDate, 4);
     for (let n = 0; n < spec.imtpSessions; n++) {
+      if (d > TODAY) break; // never seed sessions after the demo's "today"
       const progress = spec.imtpSessions > 1 ? n / (spec.imtpSessions - 1) : 0;
       imtp.push({
         date: d,

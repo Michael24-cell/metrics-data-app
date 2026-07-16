@@ -1,5 +1,14 @@
 import { currentFacility } from "@/lib/facility";
 import { rosterSummary, facilityFilterOptions, findingsWithAnnotations } from "@/lib/services/queries";
+import { teamAnalytics, teamTestTypes } from "@/lib/services/teamAnalytics";
+import {
+  TEST_TYPES,
+  METRIC_GROUPS,
+  METRICS,
+  primaryMetricsForTest,
+  defaultMetricForTest,
+} from "@/lib/config/metrics";
+import { SMALL_SAMPLE_N } from "@/lib/calc/cohort";
 import Sparkline from "@/components/charts/Sparkline";
 import FilterBar from "@/components/FilterBar";
 import FindingCard from "@/components/FindingCard";
@@ -26,16 +35,66 @@ export default async function RosterPage({
     return (b.lastTestDate ?? "").localeCompare(a.lastTestDate ?? "");
   });
 
+  /* ---- test-first team analytics ---- */
+  // Default team: the largest squad at the facility (cohort comparisons need a real group).
+  const teamSizes = new Map<string, number>();
+  for (const a of roster) if (a.team) teamSizes.set(a.team, (teamSizes.get(a.team) ?? 0) + 1);
+  const defaultTeam = [...teamSizes.entries()].sort((x, y) => y[1] - x[1])[0]?.[0];
+  const team = sp.team && options.teams.includes(sp.team) ? sp.team : defaultTeam;
+
+  const range = { from: sp.from, to: sp.to };
+  const testsUsed = team ? teamTestTypes(facility.id, team) : [];
+  const availableTests = Object.keys(TEST_TYPES).filter((k) => k !== "derived" && testsUsed.includes(k));
+  const selectedTest =
+    sp.test && availableTests.includes(sp.test)
+      ? sp.test
+      : availableTests.includes("cmj")
+        ? "cmj"
+        : (availableTests[0] ?? null);
+
+  // Only cohort-comparable primary entries are offered for team comparison.
+  const selectorEntries = selectedTest
+    ? primaryMetricsForTest(selectedTest).filter((e) =>
+        e.kind === "group"
+          ? METRIC_GROUPS[e.key].memberKeys.some((k) => METRICS[k].cohortComparable)
+          : METRICS[e.key].cohortComparable
+      )
+    : [];
+  const configuredDefault = selectedTest ? defaultMetricForTest(selectedTest) : undefined;
+  const selectedEntry =
+    selectorEntries.find((e) => e.key === sp.metric) ??
+    selectorEntries.find((e) => e.key === configuredDefault) ??
+    selectorEntries[0] ??
+    null;
+  const group = selectedEntry?.kind === "group" ? METRIC_GROUPS[selectedEntry.key] : null;
+  const pointKey = group
+    ? group.memberKeys.includes(sp.point ?? "")
+      ? sp.point!
+      : group.defaultMemberKey
+    : null;
+  const effectiveMetric = group ? pointKey! : (selectedEntry?.key ?? null);
+
+  const analytics = team && effectiveMetric ? teamAnalytics(facility.id, team, effectiveMetric, range) : null;
+
   const attention = findingsWithAnnotations(facility.id).filter(
     (f) => f.finding.severity !== "info"
   );
   const athleteName = new Map(options.athletes.map((a) => [a.id, a.name]));
 
+  const href = (patch: Record<string, string | undefined>) => {
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries({ ...sp, ...patch })) if (v != null && v !== "") next[k] = v;
+    return `?${new URLSearchParams(next).toString()}`;
+  };
+
+  const num = (v: number | null, precision: number, signed = false) =>
+    v == null ? "—" : `${signed && v > 0 ? "+" : ""}${v.toFixed(precision)}`;
+
   return (
     <main className="page">
       <div className="page-head">
         <div className="eyebrow">{facility.name}</div>
-        <h1>Roster &amp; Triage</h1>
+        <h1>Roster &amp; Team Analytics</h1>
         <div className="sub">
           Measured performance data and practitioner-defined criteria status. Nothing here diagnoses,
           predicts injury, or clears an athlete — those decisions stay with your clinical and performance team.
@@ -43,11 +102,152 @@ export default async function RosterPage({
       </div>
 
       <Suspense>
-        <FilterBar options={{ teams: options.teams, athletes: options.athletes, show: ["team", "athlete"] }} />
+        <FilterBar options={{ teams: options.teams, athletes: options.athletes, show: ["team", "athlete", "range"] }} />
       </Suspense>
 
+      {analytics && team && selectedTest && (
+        <div className="panel">
+          <div className="chart-head" style={{ marginBottom: 6 }}>
+            <h2 style={{ marginRight: "auto" }}>Team analytics — {team}</h2>
+            <div className="toggle no-print" aria-label="select test">
+              {availableTests.map((t) => (
+                <a key={t} href={href({ test: t, metric: undefined, point: undefined })}>
+                  <button data-on={t === selectedTest}>{TEST_TYPES[t].label}</button>
+                </a>
+              ))}
+            </div>
+          </div>
+          <p className="panel-sub" style={{ marginBottom: 8 }}>
+            Test first, then metric, then time window. Every value below — team summary, athlete values,
+            trends, diffs and z-scores — follows the selected metric. Comparison baseline is the whole team;
+            position groups are shown alongside. Athlete-vs-own-baseline comparison lives on the athlete
+            profile, not here.
+          </p>
+          <div className="toggle no-print" aria-label="select metric" style={{ flexWrap: "wrap", marginBottom: 8 }}>
+            {selectorEntries.map((e) => (
+              <a key={e.key} href={href({ metric: e.key, point: undefined })}>
+                <button data-on={selectedEntry?.key === e.key}>{e.label}</button>
+              </a>
+            ))}
+          </div>
+          {group && (
+            <div className="toggle no-print" aria-label="select time point" style={{ marginBottom: 8 }}>
+              {group.memberKeys.map((k) => (
+                <a key={k} href={href({ point: k })}>
+                  <button data-on={k === pointKey}>{k.match(/(\d+)ms/)?.[1]}ms</button>
+                </a>
+              ))}
+            </div>
+          )}
+
+          {/* ---- cohort summary above the athlete list ---- */}
+          <div className="statrow" style={{ marginBottom: 12 }}>
+            <div className="stat">
+              <div className="k">Team mean — {analytics.def.shortLabel}</div>
+              <div className="v">
+                {num(analytics.team.mean, analytics.def.precision)}
+                {analytics.def.unit && <small>{analytics.def.unit}</small>}
+              </div>
+              <div className="d">latest session-best per athlete in window</div>
+            </div>
+            <div className="stat">
+              <div className="k">Median</div>
+              <div className="v">
+                {num(analytics.team.median, analytics.def.precision)}
+                {analytics.def.unit && <small>{analytics.def.unit}</small>}
+              </div>
+              <div className="d">
+                range {num(analytics.team.min, analytics.def.precision)}–{num(analytics.team.max, analytics.def.precision)}
+              </div>
+            </div>
+            <div className="stat">
+              <div className="k">Spread (population SD)</div>
+              <div className="v">
+                {num(analytics.team.populationSd, analytics.def.precision)}
+                {analytics.def.unit && <small>{analytics.def.unit}</small>}
+              </div>
+              <div className="d">athlete included in own cohort</div>
+            </div>
+            <div className="stat">
+              <div className="k">Cohort size</div>
+              <div className="v">{analytics.team.n}</div>
+              <div className="d">
+                {analytics.excludedCount > 0 ? `${analytics.excludedCount} without data in window` : "all athletes have data"}
+                {analytics.team.smallSample && analytics.team.n > 0 ? ` · small sample (n<${SMALL_SAMPLE_N})` : ""}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            {analytics.positions.map(({ position, stats }) => (
+              <span key={position} className="chip" data-tone={stats.smallSample && stats.n > 0 ? "provisional" : undefined}>
+                {position}: {num(stats.mean, analytics.def.precision)} {analytics.def.unit} · n={stats.n}
+                {stats.smallSample && stats.n > 0 ? ` — small sample (n<${SMALL_SAMPLE_N})` : ""}
+              </span>
+            ))}
+          </div>
+
+          <div style={{ overflowX: "auto" }}>
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Athlete</th>
+                  <th className="num">{analytics.def.shortLabel} ({analytics.def.unit || "—"})</th>
+                  {analytics.normalizedDef && <th className="num">{analytics.normalizedDef.unit}</th>}
+                  <th>Trend</th>
+                  <th className="num">Recent Δ</th>
+                  <th className="num">Δ team</th>
+                  <th className="num">z team</th>
+                  <th className="num">Δ position</th>
+                  <th className="num">z position</th>
+                </tr>
+              </thead>
+              <tbody>
+                {analytics.rows.map((r) => (
+                  <tr key={r.athleteId}>
+                    <td>
+                      <a href={`/athletes/${r.athleteId}`} style={{ fontWeight: 600, color: "var(--ink)" }}>{r.name}</a>
+                      <div style={{ fontSize: 11.5, color: "var(--ink-mute)" }}>
+                        {r.position ?? "—"}{r.valueDate ? ` · ${r.valueDate}` : ""}
+                      </div>
+                    </td>
+                    {r.value == null ? (
+                      <td colSpan={analytics.normalizedDef ? 8 : 7} style={{ color: "var(--ink-mute)", fontSize: 12.5 }}>
+                        No {analytics.def.shortLabel} data in the selected window — excluded from cohort statistics.
+                      </td>
+                    ) : (
+                      <>
+                        <td className="num">{r.value.toFixed(analytics.def.precision)}</td>
+                        {analytics.normalizedDef && (
+                          <td className="num">{r.normalized == null ? "—" : r.normalized.toFixed(analytics.normalizedDef.precision)}</td>
+                        )}
+                        <td>{r.trend.length >= 2 ? <Sparkline values={r.trend.map((p) => p.value)} /> : <span style={{ fontSize: 11.5, color: "var(--ink-mute)" }}>{r.trend.length} session{r.trend.length === 1 ? "" : "s"}</span>}</td>
+                        <td className="num">{num(r.recentDelta, analytics.def.precision, true)}</td>
+                        <td className="num">{num(r.teamDiff, analytics.def.precision, true)}</td>
+                        <td className="num" title={r.teamZ == null ? "z-score unavailable: cohort has n<2 or zero variance" : undefined}>
+                          {num(r.teamZ, 2, true)}
+                        </td>
+                        <td className="num">{num(r.positionDiff, analytics.def.precision, true)}</td>
+                        <td className="num" title={r.positionZ == null ? "z-score unavailable: position cohort has n<2 or zero variance" : undefined}>
+                          {num(r.positionZ, 2, true)}
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 8 }}>
+            z = (value − cohort mean) ÷ population SD, athlete included in the cohort. “—” means the cohort
+            can&apos;t support a z-score (fewer than 2 athletes, or zero variance); raw values and differences
+            are still shown. Position cohorts under n={SMALL_SAMPLE_N} carry a small-sample warning.
+          </div>
+        </div>
+      )}
+
       <div className="panel">
-        <h2>Athletes</h2>
+        <h2>Athletes — attention triage</h2>
         <p className="panel-sub">
           Ordered by attention level, then testing recency. Sparkline: CMJ jump height, last 24 sessions.
         </p>
