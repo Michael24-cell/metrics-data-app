@@ -140,15 +140,13 @@ export default function CurveWorkspace(data: CurveWorkspaceData) {
               0 = {onsetLabel}
             </text>
 
-            {/* IMTP fixed-time gridlines */}
+            {/* IMTP fixed-time gridlines — unlabeled in-chart; readable labels live in the
+                external legend below (see IMTP_POINT_TIMES row) so text never has to shrink
+                to fit six closely-spaced points or overlap the axis at narrow widths. */}
             {testType === "imtp" &&
               IMTP_POINT_TIMES.filter((t) => t <= geom!.xMax).map((t) => (
-                <g key={`fp${t}`}>
-                  <line x1={geom!.x(t)} x2={geom!.x(t)} y1={PAD.t} y2={H - PAD.b} stroke="var(--accent)" strokeWidth="0.75" strokeDasharray="2 4" opacity="0.5" />
-                  <text x={geom!.x(t)} y={H - PAD.b + 10} textAnchor="middle" fontSize="8.5" fill="var(--accent)" opacity="0.8" fontFamily="var(--font-mono)">
-                    {t}
-                  </text>
-                </g>
+                <line key={`fp${t}`} x1={geom!.x(t)} x2={geom!.x(t)} y1={PAD.t} y2={H - PAD.b}
+                  stroke="var(--accent)" strokeWidth="0.75" strokeDasharray="2 4" opacity="0.5" />
               ))}
 
             {/* curves */}
@@ -181,18 +179,26 @@ export default function CurveWorkspace(data: CurveWorkspaceData) {
                       </text>
                     </g>
                   )}
-                  {testType === "cmj" && a.takeoffRelMs != null && (
-                    <g>
-                      <line x1={geom!.x(a.takeoffRelMs)} x2={geom!.x(a.takeoffRelMs)} y1={PAD.t} y2={H - PAD.b} stroke={COLORS[i]} strokeWidth="1" strokeDasharray="5 3" opacity="0.8" />
-                      <text x={geom!.x(a.takeoffRelMs) + 4} y={PAD.t + 10} fontSize="9.5" fill={COLORS[i]} fontFamily="var(--font-mono)">
-                        takeoff
-                      </text>
-                    </g>
-                  )}
                 </g>
               );
             })}
           </svg>
+
+          {/* IMTP fixed-time labels live here (regular HTML, not SVG) so they read at a
+              constant size regardless of viewport width — the six dashed markers above stay
+              unlabeled in-chart. CMJ takeoff is not drawn as a chart line; time to takeoff is
+              already available as an official value in the per-curve metadata below and in
+              the CMJ metric selector. */}
+          {testType === "imtp" && (
+            <div className="legend" style={{ marginTop: 6 }}>
+              <span style={{ color: "var(--ink-mute)" }}>Fixed-time markers:</span>
+              {IMTP_POINT_TIMES.map((t) => (
+                <span className="li" key={t}>
+                  <span className="sw" style={{ background: "var(--accent)" }} /> {t} ms
+                </span>
+              ))}
+            </div>
+          )}
 
           {curves.length === 1 && curves[0].left && curves[0].right && (
             <div className="legend" style={{ marginTop: 4 }}>

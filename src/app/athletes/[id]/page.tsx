@@ -324,7 +324,6 @@ export default async function AthletePage({
                     <th className="num">Right (N)</th>
                     <th className="num">Asym %</th>
                     <th>Stronger side</th>
-                    <th className="num">Side changes</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -337,7 +336,6 @@ export default async function AthletePage({
                       <td className="num">{fmt(r.rightN, { precision: 0, unit: "N" })}</td>
                       <td className="num">{r.asymmetryPct == null ? "—" : r.asymmetryPct.toFixed(1)}</td>
                       <td>{r.strongerSide ?? "—"}</td>
-                      <td className="num">{r.sideChanges == null ? "—" : r.sideChanges}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -346,12 +344,6 @@ export default async function AthletePage({
           ) : (
             <div className="callout">
               Force 0–300 ms values appear after an IMTP session with a detected force onset is imported.
-            </div>
-          )}
-          {forceWindow.latestDate && (
-            <div style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 8 }}>
-              Side changes count how many times the stronger side flipped left↔right across the sessions in the
-              selected range; “—” means fewer than two sessions with left/right data.
             </div>
           )}
         </div>
@@ -402,7 +394,6 @@ export default async function AthletePage({
           <p className="panel-sub">
             Latest asymmetry {pointAsym.points[pointAsym.points.length - 1].value.toFixed(1)}%
             {" · "}stronger side: {pointAsym.points[pointAsym.points.length - 1].strongerSide}
-            {pointAsym.sideChanges != null && <>{" · "}stronger side changed {pointAsym.sideChanges}× in this range</>}
             {" · "}watch ≥{pointAsym.watchPct}% · flag ≥{pointAsym.flagPct}%
           </p>
           <AsymmetryChart

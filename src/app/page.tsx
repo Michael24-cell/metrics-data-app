@@ -180,26 +180,27 @@ export default async function RosterPage({
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
             {analytics.positions.map(({ position, stats }) => (
-              <span key={position} className="chip" data-tone={stats.smallSample && stats.n > 0 ? "provisional" : undefined}>
+              <span key={position} className="chip">
                 {position}: {num(stats.mean, analytics.def.precision)} {analytics.def.unit} · n={stats.n}
-                {stats.smallSample && stats.n > 0 ? ` — small sample (n<${SMALL_SAMPLE_N})` : ""}
               </span>
             ))}
           </div>
 
-          <div style={{ overflowX: "auto" }}>
+          {/* ---- desktop/tablet: dense table, Peak/Average/Most recent left of Trend ---- */}
+          <div className="ta-table-wrap">
             <table className="data">
               <thead>
                 <tr>
                   <th>Athlete</th>
-                  <th className="num">{analytics.def.shortLabel} ({analytics.def.unit || "—"})</th>
-                  {analytics.normalizedDef && <th className="num">{analytics.normalizedDef.unit}</th>}
+                  <th className="num">Peak</th>
+                  <th className="num">Average</th>
+                  <th className="num">Most recent</th>
                   <th>Trend</th>
-                  <th className="num">Recent Δ</th>
-                  <th className="num">Δ team</th>
-                  <th className="num">z team</th>
-                  <th className="num">Δ position</th>
-                  <th className="num">z position</th>
+                  <th className="num" style={{ borderLeft: "1px solid var(--line-strong)", color: "var(--ink-mute)" }}>Recent Δ</th>
+                  <th className="num" style={{ color: "var(--ink-mute)" }}>Δ team</th>
+                  <th className="num" style={{ color: "var(--ink-mute)" }}>z team</th>
+                  <th className="num" style={{ color: "var(--ink-mute)" }}>Δ position</th>
+                  <th className="num" style={{ color: "var(--ink-mute)" }}>z position</th>
                 </tr>
               </thead>
               <tbody>
@@ -208,27 +209,33 @@ export default async function RosterPage({
                     <td>
                       <a href={`/athletes/${r.athleteId}`} style={{ fontWeight: 600, color: "var(--ink)" }}>{r.name}</a>
                       <div style={{ fontSize: 11.5, color: "var(--ink-mute)" }}>
-                        {r.position ?? "—"}{r.valueDate ? ` · ${r.valueDate}` : ""}
+                        {r.position ?? "—"}{r.mostRecentDate ? ` · ${r.mostRecentDate}` : ""}
                       </div>
                     </td>
-                    {r.value == null ? (
-                      <td colSpan={analytics.normalizedDef ? 8 : 7} style={{ color: "var(--ink-mute)", fontSize: 12.5 }}>
+                    {r.mostRecent == null ? (
+                      <td colSpan={9} style={{ color: "var(--ink-mute)", fontSize: 12.5 }}>
                         No {analytics.def.shortLabel} data in the selected window — excluded from cohort statistics.
                       </td>
                     ) : (
                       <>
-                        <td className="num">{r.value.toFixed(analytics.def.precision)}</td>
-                        {analytics.normalizedDef && (
-                          <td className="num">{r.normalized == null ? "—" : r.normalized.toFixed(analytics.normalizedDef.precision)}</td>
-                        )}
+                        <td className="num">{num(r.peak, analytics.def.precision)}</td>
+                        <td className="num">{num(r.average, analytics.def.precision)}</td>
+                        <td className="num">
+                          {r.mostRecent.toFixed(analytics.def.precision)}
+                          {analytics.normalizedDef && (
+                            <div style={{ fontSize: 11, color: "var(--ink-mute)", fontWeight: 400 }}>
+                              {r.normalized == null ? "—" : r.normalized.toFixed(analytics.normalizedDef.precision)} {analytics.normalizedDef.unit}
+                            </div>
+                          )}
+                        </td>
                         <td>{r.trend.length >= 2 ? <Sparkline values={r.trend.map((p) => p.value)} /> : <span style={{ fontSize: 11.5, color: "var(--ink-mute)" }}>{r.trend.length} session{r.trend.length === 1 ? "" : "s"}</span>}</td>
-                        <td className="num">{num(r.recentDelta, analytics.def.precision, true)}</td>
-                        <td className="num">{num(r.teamDiff, analytics.def.precision, true)}</td>
-                        <td className="num" title={r.teamZ == null ? "z-score unavailable: cohort has n<2 or zero variance" : undefined}>
+                        <td className="num" style={{ borderLeft: "1px solid var(--line-strong)", color: "var(--ink-dim)" }}>{num(r.recentDelta, analytics.def.precision, true)}</td>
+                        <td className="num" style={{ color: "var(--ink-dim)" }}>{num(r.teamDiff, analytics.def.precision, true)}</td>
+                        <td className="num" style={{ color: "var(--ink-dim)" }} title={r.teamZ == null ? "z-score unavailable: cohort has n<2 or zero variance" : undefined}>
                           {num(r.teamZ, 2, true)}
                         </td>
-                        <td className="num">{num(r.positionDiff, analytics.def.precision, true)}</td>
-                        <td className="num" title={r.positionZ == null ? "z-score unavailable: position cohort has n<2 or zero variance" : undefined}>
+                        <td className="num" style={{ color: "var(--ink-dim)" }}>{num(r.positionDiff, analytics.def.precision, true)}</td>
+                        <td className="num" style={{ color: "var(--ink-dim)" }} title={r.positionZ == null ? "z-score unavailable: position cohort has n<2 or zero variance" : undefined}>
                           {num(r.positionZ, 2, true)}
                         </td>
                       </>
@@ -238,10 +245,63 @@ export default async function RosterPage({
               </tbody>
             </table>
           </div>
+
+          {/* ---- narrow screens: one card per athlete, comparisons deprioritized below ---- */}
+          <div className="ta-cards">
+            {analytics.rows.map((r) => (
+              <div className="ta-card" key={r.athleteId}>
+                <div className="ta-card-head">
+                  <div>
+                    <a href={`/athletes/${r.athleteId}`} style={{ fontWeight: 600, color: "var(--ink)" }}>{r.name}</a>
+                    <div style={{ fontSize: 11.5, color: "var(--ink-mute)" }}>
+                      {r.position ?? "—"}{r.mostRecentDate ? ` · ${r.mostRecentDate}` : ""}
+                    </div>
+                  </div>
+                </div>
+                {r.mostRecent == null ? (
+                  <div style={{ color: "var(--ink-mute)", fontSize: 12.5 }}>
+                    No {analytics.def.shortLabel} data in the selected window — excluded from cohort statistics.
+                  </div>
+                ) : (
+                  <>
+                    <div className="statrow">
+                      <div className="stat">
+                        <div className="k">Peak</div>
+                        <div className="v">{num(r.peak, analytics.def.precision)}<small>{analytics.def.unit}</small></div>
+                      </div>
+                      <div className="stat">
+                        <div className="k">Average</div>
+                        <div className="v">{num(r.average, analytics.def.precision)}<small>{analytics.def.unit}</small></div>
+                      </div>
+                      <div className="stat">
+                        <div className="k">Most recent</div>
+                        <div className="v">{r.mostRecent.toFixed(analytics.def.precision)}<small>{analytics.def.unit}</small></div>
+                        {analytics.normalizedDef && (
+                          <div className="d">{r.normalized == null ? "—" : r.normalized.toFixed(analytics.normalizedDef.precision)} {analytics.normalizedDef.unit}</div>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 10 }}>
+                      {r.trend.length >= 2 ? <Sparkline values={r.trend.map((p) => p.value)} /> : <span style={{ fontSize: 11.5, color: "var(--ink-mute)" }}>{r.trend.length} session{r.trend.length === 1 ? "" : "s"}</span>}
+                    </div>
+                    <div className="ta-card-compare">
+                      <span>Recent Δ {num(r.recentDelta, analytics.def.precision, true)}</span>
+                      <span>Δ team {num(r.teamDiff, analytics.def.precision, true)}</span>
+                      <span title={r.teamZ == null ? "z-score unavailable: cohort has n<2 or zero variance" : undefined}>z team {num(r.teamZ, 2, true)}</span>
+                      <span>Δ position {num(r.positionDiff, analytics.def.precision, true)}</span>
+                      <span title={r.positionZ == null ? "z-score unavailable: position cohort has n<2 or zero variance" : undefined}>z position {num(r.positionZ, 2, true)}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+
           <div style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 8 }}>
-            z = (value − cohort mean) ÷ population SD, athlete included in the cohort. “—” means the cohort
-            can&apos;t support a z-score (fewer than 2 athletes, or zero variance); raw values and differences
-            are still shown. Position cohorts under n={SMALL_SAMPLE_N} carry a small-sample warning.
+            Peak, average and most recent all reflect valid {analytics.def.shortLabel} values within the selected
+            window. z = (value − cohort mean) ÷ population SD, athlete included in the cohort. “—” means the
+            cohort can&apos;t support a z-score (fewer than 2 athletes, or zero variance); raw values and
+            differences are still shown.
           </div>
         </div>
       )}
