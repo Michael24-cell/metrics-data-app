@@ -131,20 +131,54 @@ export const QUESTION_LABELS: Record<QuestionKey, string> = {
   baseline_comparison: "How does the current session compare with the reference baseline and the recent baseline?",
 };
 
+/** one headline number in a V2 answer — value is preformatted display text */
+export const KeyValueSchema = z.object({
+  label: z.string().min(1).max(80),
+  value: z.string().min(1).max(60),
+  unit: z.string().max(20).optional(),
+});
+export type KeyValue = z.infer<typeof KeyValueSchema>;
+
+/** the scope an answer was computed over — shown to the trainer, editable via re-ask */
+export const AnswerContextSchema = z.object({
+  testType: z.string().max(30).optional(),
+  metricKey: z.string().max(60).optional(),
+  window: z.string().max(60).optional(),
+  cohort: z.enum(["team", "position"]).optional(),
+  comparison: z.string().max(120).optional(),
+});
+export type AnswerContext = z.infer<typeof AnswerContextSchema>;
+
 export const AgentAnswerSchema = z.object({
   answerId: z.string(),
   athleteId: z.string(),
   facilityId: z.string(),
   task: z.literal("question"),
-  questionKey: z.enum(QUESTION_KEYS),
+  /** set for the seven guided questions; free-text questions carry only `question` */
+  questionKey: z.enum(QUESTION_KEYS).optional(),
   question: z.string(),
   asOf: z.string().optional(),
   generatedAt: z.string(),
   summary: z.string().min(1).max(1500),
   claims: z.array(ClaimSchema).min(1).max(12),
   dataUsed: z.array(EvidenceRefSchema).max(60),
+  /* ---- V2 answer contract (optional so guided-question answers stay valid) ---- */
+  /** one- or two-sentence direct answer, shown first */
+  directAnswer: z.string().max(400).optional(),
+  keyValues: z.array(KeyValueSchema).max(8).optional(),
+  comparisonBasis: z.string().max(200).optional(),
+  limitations: z.array(z.string().max(300)).max(6).optional(),
+  suggestedNext: z.array(z.string().max(200)).max(4).optional(),
+  followUps: z.array(z.string().max(160)).max(4).optional(),
+  contextUsed: AnswerContextSchema.optional(),
 });
 export type AgentAnswer = z.infer<typeof AgentAnswerSchema>;
+
+/** returned instead of an answer when a materially answer-changing basis is ambiguous */
+export interface ClarificationRequest {
+  question: string;
+  options: { label: string; question: string }[];
+}
 
 /* ------------------------------------------------------------------ */
 /* Report diff (use case C)                                            */
@@ -225,12 +259,18 @@ export interface AgentRun {
   athleteName: string;
   task: "report" | "question";
   questionKey?: QuestionKey;
+  /** free-text question, when this run answered one */
+  question?: string;
   asOf?: string;
   createdAt: string;
   mode: AgentMode;
   trace: TraceStep[];
   report?: GeneratedReport;
   answer?: AgentAnswer;
+  /** set instead of answer when the router needs one clarification first */
+  clarification?: ClarificationRequest;
+  /** router output for the Developer/Audit view (never shown in trainer UI) */
+  routedIntent?: { kind: string; testType?: string; metricKey?: string; cohort?: string; requiredTools: string[] };
   eval: EvalResult;
   provenance: Provenance;
 }
@@ -285,5 +325,12 @@ export type ModelReportSubmit = z.infer<typeof ModelReportSubmitSchema>;
 export const ModelAnswerSubmitSchema = z.object({
   summary: z.string().min(1).max(1500),
   claims: z.array(ModelClaimSchema).min(1).max(12),
+  /* V2 answer contract (optional; post-processed into the typed answer) */
+  directAnswer: z.string().max(400).optional(),
+  keyValues: z.array(KeyValueSchema).max(8).optional(),
+  comparisonBasis: z.string().max(200).optional(),
+  limitations: z.array(z.string().max(300)).max(6).optional(),
+  suggestedNext: z.array(z.string().max(200)).max(4).optional(),
+  followUps: z.array(z.string().max(160)).max(4).optional(),
 });
 export type ModelAnswerSubmit = z.infer<typeof ModelAnswerSubmitSchema>;
