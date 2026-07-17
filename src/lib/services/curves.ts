@@ -19,6 +19,7 @@ import {
   MAX_OVERLAID_CURVES,
 } from "../calc/curveWorkspace";
 import { EventMarkers } from "../calc/curve";
+import { compareCurves, CurveComparison } from "../calc/curveCompare";
 import { IMTP_FORCE_POINT_KEYS } from "../config/metrics";
 
 export interface CurveAttemptOption {
@@ -167,4 +168,69 @@ export function curveWorkspace(
   }));
 
   return { testType, options, excluded, curves, resolvedTokens };
+}
+
+/* ------------------------------------------------------------------ */
+/* Deterministic curve comparison (Agent-facing)                       */
+/* ------------------------------------------------------------------ */
+
+export interface CurveComparisonResult {
+  testType: "cmj" | "imtp";
+  /** null when a selection could not be resolved (with the reason) */
+  comparison: CurveComparison | null;
+  unresolved: string | null;
+  a: WorkspaceCurve | null;
+  b: WorkspaceCurve | null;
+  /** attempts unusable for curves at all, with reasons */
+  excluded: ReturnType<typeof curveWorkspace>["excluded"];
+}
+
+/**
+ * Resolve two selection tokens ("attempt:<id>" | "rolling:<n>" | "alltime" |
+ * "latest" | "previous") and compare the prepared curves deterministically.
+ * All alignment/averaging comes from curveWorkspace; all differencing from
+ * calc/curveCompare. Nothing here re-reads waveforms.
+ */
+export function compareCurveSelections(
+  facilityId: string,
+  athleteId: string,
+  testType: "cmj" | "imtp",
+  tokenA: string,
+  tokenB: string,
+  range: { from?: string; to?: string } = {}
+): CurveComparisonResult {
+  // "latest"/"previous" convenience tokens resolve against the valid list.
+  const base = curveWorkspace(facilityId, athleteId, testType, [], range);
+  const recentFirst = base.options; // already most recent first
+  const resolveToken = (t: string): string | null => {
+    if (t === "latest") return recentFirst[0] ? `attempt:${recentFirst[0].trialId}` : null;
+    if (t === "previous") return recentFirst[1] ? `attempt:${recentFirst[1].trialId}` : null;
+    return t;
+  };
+  const ra = resolveToken(tokenA);
+  const rb = resolveToken(tokenB);
+  if (!ra || !rb) {
+    return {
+      testType,
+      comparison: null,
+      unresolved: `not enough valid attempts to resolve "${!ra ? tokenA : tokenB}"`,
+      a: null,
+      b: null,
+      excluded: base.excluded,
+    };
+  }
+  const ws = curveWorkspace(facilityId, athleteId, testType, [ra, rb], range);
+  const a = ws.curves.find((c) => c.token === ra) ?? null;
+  const b = ws.curves.find((c) => c.token === rb) ?? null;
+  if (!a || !b) {
+    return {
+      testType,
+      comparison: null,
+      unresolved: `selection "${!a ? tokenA : tokenB}" could not be prepared (unknown attempt or no valid attempts)`,
+      a,
+      b,
+      excluded: ws.excluded,
+    };
+  }
+  return { testType, comparison: compareCurves(a, b), unresolved: null, a, b, excluded: ws.excluded };
 }

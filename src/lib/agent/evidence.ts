@@ -168,6 +168,40 @@ export function resolveEvidence(
         record: row,
       };
     }
+    case "cohort": {
+      // cohort:<team|position>:<name>:<metricKey>
+      if (!/^cohort:(team|position):/.test(id)) return fail(type, id, "Malformed cohort-evidence id.");
+      const metricKey = id.split(":").pop() ?? "";
+      return {
+        ok: true, type, id,
+        title: `${id.split(":")[1] === "team" ? "Team" : "Position"} cohort — ${METRICS[metricKey]?.shortLabel ?? metricKey}`,
+        detail:
+          "Cohort statistics from the deterministic team-analytics service (population SD, athlete included in own cohort; no z-score when n<2 or variance is zero). Same values as the roster team-analytics view.",
+        link: `/`,
+      };
+    }
+    case "curve": {
+      // curve:<testType>:<tokenA[..vs..tokenB]>
+      if (!/^curve:(cmj|imtp):/.test(id)) return fail(type, id, "Malformed curve-evidence id.");
+      return {
+        ok: true, type, id,
+        title: id.includes("..vs..") ? "Force-time curve comparison" : "Prepared force-time curve",
+        detail:
+          "Prepared by the deterministic curve workspace (onset-aligned, validated attempts only). Official values come from persisted metric rows and full-rate-derived event markers; display-resolution values are labeled as such.",
+        link: `/athletes/${athleteId}`,
+      };
+    }
+    case "lv_profile": {
+      // lv:<exercise>:<date>
+      if (!/^lv:/.test(id)) return fail(type, id, "Malformed load-velocity evidence id.");
+      return {
+        ok: true, type, id,
+        title: `Load–velocity profile — ${id.split(":")[1]?.replace(/_/g, " ") ?? "exercise"}`,
+        detail:
+          "Rebuilt live from stored valid reps (mean of valid reps per distinct load; two-point method at 2 loads, least squares at 3+; R² only with ≥3 loads; no 1RM prediction).",
+        link: `/athletes/${athleteId}`,
+      };
+    }
     // Derived/computed evidence: self-describing ids validated by shape.
     case "metric_series":
     case "baseline":

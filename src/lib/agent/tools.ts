@@ -25,10 +25,22 @@ import {
   listSessionMetrics,
   getSession,
 } from "../db/dal";
-import { metricTrend, baselineSeries, asymmetryTrend, findingsWithAnnotations } from "../services/queries";
-import { METRICS, metricDef, ASYMMETRY_SOURCE_METRICS, BASELINE_MONITORED_METRICS } from "../config/metrics";
+import { baselineSeries, asymmetryTrend, findingsWithAnnotations, imtpForceWindowSummary } from "../services/queries";
+import { teamAnalytics } from "../services/teamAnalytics";
+import { compareCurveSelections, curveWorkspace } from "../services/curves";
+import { liveLoadVelocityProfiles } from "../services/loadVelocity";
+import {
+  METRICS,
+  metricDef,
+  metricsForTest,
+  ASYMMETRY_SOURCE_METRICS,
+  BASELINE_MONITORED_METRICS,
+  TEST_TYPES,
+} from "../config/metrics";
 import { mean } from "../calc/signal";
 import { directionChanges as computeDirectionChanges } from "../calc/asymmetry";
+import { summarizeSeries } from "../calc/seriesSummary";
+import { SMALL_SAMPLE_N } from "../calc/cohort";
 import { checkComparability, SessionDescriptor, ComparabilityResult } from "./comparability";
 import { EvidenceRef } from "./schemas";
 
@@ -594,6 +606,317 @@ export function createToolExecutor(ctx: ToolContext): ToolExecutor {
         evidence: rows.map((r) => ({ id: `note:${r.id}`, type: "note" as const, label: `${r.assessed_on} · ${r.category}`, date: r.assessed_on, values: textNumbers(r.summary).slice(0, 40) })),
         data: rows.map((r) => ({ id: r.id, date: r.assessed_on, category: r.category, assessor: r.assessor, text: r.summary })),
         insufficient: rows.length === 0 ? "no notes" : undefined,
+      };
+    }
+  );
+
+  /* ---------------- V2 analytics tools (adapters over the deterministic services) ---------------- */
+
+  const realTestKeys = Object.keys(TEST_TYPES).filter((k) => k !== "derived" && k !== "fv_profile");
+  const curveTestKeys = ["cmj", "imtp"];
+  const cohortMetricKeys = Object.values(METRICS)
+    .filter((m) => m.cohortComparable && m.testType !== "derived")
+    .map((m) => m.key);
+
+  /* 14 — getTestSummary */
+  add(
+    "getTestSummary",
+    "Test-first summary for one test type: peak, average and most recent value (plus date and session count) for every trainer-facing metric of that test, from persisted session-best values. Use this before diving into a single metric.",
+    { testType: z.enum(realTestKeys as [string, ...string[]]) },
+    { testType: { type: "string", enum: realTestKeys } },
+    ["testType"],
+    (input) => {
+      const testType = input.testType as string;
+      const defs = metricsForTest(testType).filter((m) => m.visibility === "primary" && m.status === "implemented");
+      const rows = defs.map((d) => {
+        const series = sessionBestSeries(ctx.facilityId, ctx.athleteId, d.key, "bilateral", { to });
+        const s = summarizeSeries(series);
+        return { def: d, s };
+      });
+      const withData = rows.filter((r) => r.s.n > 0);
+      if (withData.length === 0) {
+        return { ok: true, summary: `No ${TEST_TYPES[testType].label} data recorded${to ? ` on/before ${to}` : ""}.`, evidence: [], data: { metrics: [] }, insufficient: `no ${testType} sessions` };
+      }
+      const evidence: EvidenceRef[] = withData.map(({ def: d, s }) => ({
+        id: `series:${d.key}:bilateral:summary:${windowLabel(undefined, to)}`,
+        type: "metric_series",
+        label: `${d.shortLabel}: peak ${round(s.peak!, d.precision)}, average ${round(s.average!, d.precision)}, most recent ${round(s.mostRecent!, d.precision)} ${d.unit} (${s.n} sessions)`,
+        values: [round(s.peak!, d.precision), round(s.average!, d.precision), round(s.mostRecent!, d.precision), s.n],
+        unit: d.unit,
+        methodVersion: d.methodVersion,
+        date: s.mostRecentDate ?? undefined,
+      }));
+      return {
+        ok: true,
+        summary: `${TEST_TYPES[testType].label}: ${withData.length} metrics with data. ${withData
+          .slice(0, 3)
+          .map(({ def: d, s }) => `${d.shortLabel} most recent ${round(s.mostRecent!, d.precision)} ${d.unit}`)
+          .join("; ")}.`,
+        evidence,
+        data: {
+          testType,
+          metrics: rows.map(({ def: d, s }) => ({
+            metricKey: d.key,
+            label: d.shortLabel,
+            unit: d.unit,
+            peak: num(s.peak, d.precision),
+            average: num(s.average, d.precision),
+            mostRecent: num(s.mostRecent, d.precision),
+            mostRecentDate: s.mostRecentDate,
+            sessions: s.n,
+            normalizedKey: d.normalizedKey ?? null,
+          })),
+        },
+      };
+    }
+  );
+
+  /* 15 — getForceWindowSummary */
+  add(
+    "getForceWindowSummary",
+    "IMTP Force 0-300 ms summary from persisted official metric rows: absolute N, N/kg, left/right, asymmetry % and stronger side per fixed time point (50-300 ms), plus stronger-side change count across the history. Never derived from the display waveform.",
+    {}, {}, [],
+    () => {
+      const fw = imtpForceWindowSummary(ctx.facilityId, ctx.athleteId, { to });
+      if (!fw.latestDate) {
+        return { ok: true, summary: "No IMTP force-point data recorded.", evidence: [], data: null, insufficient: "no IMTP force-point data" };
+      }
+      const evidence: EvidenceRef[] = fw.rows
+        .filter((r) => r.absN != null)
+        .map((r) => ({
+          id: `series:${r.metricKey}:window:${fw.latestDate}`,
+          type: "metric_series",
+          label: `Force @${r.ms}ms on ${r.latestDate}: ${Math.round(r.absN!)} N${r.relNkg != null ? ` (${round(r.relNkg, 2)} N/kg)` : ""}${r.asymmetryPct != null ? `, asym ${round(r.asymmetryPct, 1)}% ${r.strongerSide} stronger` : ""}`,
+          values: [Math.round(r.absN!), ...(r.relNkg != null ? [round(r.relNkg, 2)] : []), ...(r.leftN != null ? [Math.round(r.leftN)] : []), ...(r.rightN != null ? [Math.round(r.rightN)] : []), ...(r.asymmetryPct != null ? [round(r.asymmetryPct, 1)] : []), ...(r.sideChanges != null ? [r.sideChanges] : []), r.ms],
+          unit: "N",
+          date: r.latestDate ?? undefined,
+        }));
+      const watch = getThreshold(ctx.facilityId, "asymmetry_watch_pct");
+      if (watch) evidence.push({ id: `thr:asymmetry_watch_pct:v${watch.version}`, type: "threshold", label: `watch ≥ ${watch.value}%`, value: watch.value, values: [watch.value], thresholdVersion: watch.version });
+      const p100 = fw.rows.find((r) => r.ms === 100);
+      return {
+        ok: true,
+        summary: `Force 0-300 ms (latest ${fw.latestDate}): ${fw.rows.filter((r) => r.absN != null).length} official time points.${p100?.absN != null ? ` @100ms ${Math.round(p100.absN)} N${p100.asymmetryPct != null ? `, asymmetry ${round(p100.asymmetryPct, 1)}% (${p100.strongerSide} stronger)` : ""}.` : ""} Side values only where genuine dual-plate data exists.`,
+        evidence,
+        data: { latestDate: fw.latestDate, watchPct: fw.watchPct, flagPct: fw.flagPct, rows: fw.rows },
+      };
+    }
+  );
+
+  /* 16 — getTeamComparison */
+  add(
+    "getTeamComparison",
+    "Whole-team and position-group cohort comparison for one cohort-comparable metric: team/position mean, median, population SD, cohort size, the scoped athlete's raw diff and z-score against both cohorts, and the athletes furthest from the team mean. Cohort contract: population SD, athlete included, no z when n<2 or zero variance. Content matches the facility's roster team-analytics view (facility-scoped cohort data, not another athlete's private record).",
+    { metricType: z.enum(cohortMetricKeys as [string, ...string[]]) },
+    { metricType: { type: "string", enum: cohortMetricKeys } },
+    ["metricType"],
+    (input) => {
+      const metricType = input.metricType as string;
+      const def = metricDef(metricType);
+      const a = getAthlete(ctx.facilityId, ctx.athleteId);
+      if (!a?.team) {
+        return { ok: true, summary: "Athlete has no team on record — cohort comparison not available.", evidence: [], data: null, insufficient: "no team on record" };
+      }
+      const t = teamAnalytics(ctx.facilityId, a.team, metricType, { to });
+      const own = t.rows.find((r) => r.athleteId === ctx.athleteId);
+      if (!own || own.mostRecent == null) {
+        return {
+          ok: true,
+          summary: `${a.display_name} has no ${def.shortLabel} value in the window — excluded from the cohort; team statistics still exist (n=${t.team.n}).`,
+          evidence: t.team.n > 0 ? [{ id: `cohort:team:${a.team}:${metricType}`, type: "cohort" as const, label: `${a.team} ${def.shortLabel}: mean ${num(t.team.mean, def.precision)} ${def.unit}, n=${t.team.n}`, values: [num(t.team.mean, def.precision) ?? 0, num(t.team.median, def.precision) ?? 0, num(t.team.populationSd, def.precision) ?? 0, t.team.n], unit: def.unit }] : [],
+          data: { team: t.team, athlete: null },
+          insufficient: "athlete has no value in window",
+        };
+      }
+      const posEntry = own.position ? t.positions.find((p) => p.position === own.position) : undefined;
+      const ranked = t.rows.filter((r) => r.mostRecent != null && r.teamDiff != null);
+      const extremes = [...ranked].sort((x, y) => Math.abs(y.teamDiff!) - Math.abs(x.teamDiff!)).slice(0, 3);
+      const evidence: EvidenceRef[] = [
+        {
+          id: `cohort:team:${a.team}:${metricType}`,
+          type: "cohort",
+          label: `${a.team} ${def.shortLabel}: mean ${num(t.team.mean, def.precision)}, median ${num(t.team.median, def.precision)}, population SD ${num(t.team.populationSd, def.precision)} ${def.unit}, n=${t.team.n}${t.excludedCount ? ` (${t.excludedCount} without data)` : ""}`,
+          values: [num(t.team.mean, def.precision) ?? 0, num(t.team.median, def.precision) ?? 0, num(t.team.populationSd, def.precision) ?? 0, t.team.n, t.excludedCount, ...extremes.map((e) => round(e.teamDiff!, def.precision))],
+          unit: def.unit,
+        },
+        {
+          id: `series:${metricType}:bilateral:cohort-standing:${windowLabel(undefined, to)}`,
+          type: "metric_series",
+          label: `${a.display_name} ${def.shortLabel}: most recent ${round(own.mostRecent, def.precision)} ${def.unit} (${own.mostRecentDate}), diff from team mean ${num(own.teamDiff, def.precision)}, team z ${num(own.teamZ, 2) ?? "unavailable"}${posEntry ? `; diff from ${own.position} mean ${num(own.positionDiff, def.precision)}, position z ${num(own.positionZ, 2) ?? "unavailable"}` : ""}`,
+          values: [round(own.mostRecent, def.precision), ...(own.teamDiff != null ? [round(own.teamDiff, def.precision)] : []), ...(own.teamZ != null ? [round(own.teamZ, 2)] : []), ...(own.positionDiff != null ? [round(own.positionDiff, def.precision)] : []), ...(own.positionZ != null ? [round(own.positionZ, 2)] : []), ...(own.peak != null ? [round(own.peak, def.precision)] : []), ...(own.average != null ? [round(own.average, def.precision)] : [])],
+          unit: def.unit,
+          date: own.mostRecentDate ?? undefined,
+        },
+      ];
+      if (posEntry) {
+        evidence.push({
+          id: `cohort:position:${posEntry.position}:${metricType}`,
+          type: "cohort",
+          label: `${posEntry.position} cohort ${def.shortLabel}: mean ${num(posEntry.stats.mean, def.precision)} ${def.unit}, n=${posEntry.stats.n}${posEntry.stats.populationSd === 0 ? " (zero variance — no z-score)" : ""}`,
+          values: [num(posEntry.stats.mean, def.precision) ?? 0, num(posEntry.stats.median, def.precision) ?? 0, num(posEntry.stats.populationSd, def.precision) ?? 0, posEntry.stats.n],
+          unit: def.unit,
+        });
+      }
+      const zNote = own.teamZ == null ? " Team z-score unavailable (cohort n<2 or zero variance) — raw diff still valid." : "";
+      return {
+        ok: true,
+        summary: `${def.shortLabel} vs ${a.team} (n=${t.team.n}): athlete ${round(own.mostRecent, def.precision)} ${def.unit}, team mean ${num(t.team.mean, def.precision)}, diff ${num(own.teamDiff, def.precision)}, z ${num(own.teamZ, 2) ?? "—"}.${posEntry ? ` ${own.position} cohort (n=${posEntry.stats.n}): mean ${num(posEntry.stats.mean, def.precision)}, z ${num(own.positionZ, 2) ?? "—"}.` : ""}${zNote}`,
+        evidence,
+        data: {
+          team: a.team,
+          metric: metricType,
+          unit: def.unit,
+          teamStats: t.team,
+          positionStats: posEntry ? { position: posEntry.position, ...posEntry.stats } : null,
+          athlete: { peak: num(own.peak, def.precision), average: num(own.average, def.precision), mostRecent: round(own.mostRecent, def.precision), mostRecentDate: own.mostRecentDate, teamDiff: num(own.teamDiff, def.precision), teamZ: num(own.teamZ, 2), positionDiff: num(own.positionDiff, def.precision), positionZ: num(own.positionZ, 2) },
+          furthestFromTeamMean: extremes.map((e) => ({ name: e.name, position: e.position, value: round(e.mostRecent!, def.precision), diff: round(e.teamDiff!, def.precision) })),
+          excludedCount: t.excludedCount,
+          smallSampleThreshold: SMALL_SAMPLE_N,
+        },
+      };
+    }
+  );
+
+  /* 17 — getCurveOptions */
+  add(
+    "getCurveOptions",
+    "Which force-time curve selections exist for a test: valid individual attempts (most recent first), which rolling averages are meaningful, and attempts excluded from curve analysis with reasons.",
+    { testType: z.enum(curveTestKeys as [string, ...string[]]) },
+    { testType: { type: "string", enum: curveTestKeys } },
+    ["testType"],
+    (input) => {
+      const testType = input.testType as "cmj" | "imtp";
+      const ws = curveWorkspace(ctx.facilityId, ctx.athleteId, testType, [], { to });
+      const evidence: EvidenceRef[] = [
+        {
+          id: `curve:${testType}:options:${windowLabel(undefined, to)}`,
+          type: "curve",
+          label: `${ws.options.length} valid ${testType.toUpperCase()} attempts, ${ws.excluded.length} excluded`,
+          values: [ws.options.length, ws.excluded.length],
+        },
+      ];
+      return {
+        ok: true,
+        summary: `${ws.options.length} valid ${testType.toUpperCase()} attempts (latest ${ws.options[0]?.date ?? "none"}); ${ws.excluded.length} excluded. Selection tokens: "latest", "previous", "attempt:<trialId>", "rolling:5|10|30", "alltime".`,
+        evidence,
+        data: {
+          attempts: ws.options.slice(0, 20),
+          excluded: ws.excluded.slice(0, 10),
+          rollingWindows: [5, 10, 30].filter((w) => ws.options.length >= 2),
+        },
+        insufficient: ws.options.length === 0 ? "no valid attempts with waveform + alignment markers" : undefined,
+      };
+    }
+  );
+
+  /* 18 — compareCurves */
+  add(
+    "compareCurves",
+    "Deterministic comparison of two prepared force-time curves (individual attempts and/or rolling/all-time averages). Returns official differences (peak force, time to peak, time to takeoff, fixed-time force points) when both sides are individual attempts, plus display-resolution peak and mean-difference over the overlapping aligned window. Selections: 'latest', 'previous', 'attempt:<trialId>', 'rolling:5|10|30', 'alltime'.",
+    {
+      testType: z.enum(curveTestKeys as [string, ...string[]]),
+      a: z.string().min(2).max(80),
+      b: z.string().min(2).max(80),
+    },
+    {
+      testType: { type: "string", enum: curveTestKeys },
+      a: { type: "string" },
+      b: { type: "string" },
+    },
+    ["testType", "a", "b"],
+    (input) => {
+      const testType = input.testType as "cmj" | "imtp";
+      const res = compareCurveSelections(ctx.facilityId, ctx.athleteId, testType, input.a as string, input.b as string, { to });
+      if (!res.comparison || !res.a || !res.b) {
+        return { ok: true, summary: `Curve comparison not possible: ${res.unresolved}.`, evidence: [], data: { excluded: res.excluded }, insufficient: res.unresolved ?? "unresolved selection" };
+      }
+      const c = res.comparison;
+      const values: number[] = [];
+      if (c.displayPeakN) values.push(c.displayPeakN.a, c.displayPeakN.b, c.displayPeakN.diff);
+      if (c.meanDiffOverOverlapN != null) values.push(c.meanDiffOverOverlapN);
+      for (const p of [c.officialPeakForceN, c.officialTimeToPeakMs, c.officialTimeToTakeoffMs]) {
+        if (p) values.push(p.a, p.b, p.diff);
+      }
+      for (const fp of c.officialForcePointDiffs ?? []) values.push(fp.ms, fp.a, fp.b, fp.diff);
+      values.push(res.a.includedCount, res.b.includedCount);
+      const evidence: EvidenceRef[] = [
+        {
+          id: `curve:${testType}:${res.a.token}..vs..${res.b.token}`,
+          type: "curve",
+          label: c.comparable
+            ? `Curve comparison: ${c.a.label} vs ${c.b.label}`
+            : `Curves NOT comparable: ${c.reasons.join("; ")}`,
+          values: values.slice(0, 40),
+        },
+      ];
+      if (!c.comparable) {
+        return { ok: true, summary: `Curves are NOT comparable: ${c.reasons.join("; ")}. Do not state curve differences.`, evidence, data: c, insufficient: c.reasons.join("; ") };
+      }
+      const officialBits: string[] = [];
+      if (c.officialPeakForceN) officialBits.push(`peak force ${c.officialPeakForceN.a} vs ${c.officialPeakForceN.b} N (diff ${c.officialPeakForceN.diff})`);
+      if (c.officialTimeToPeakMs) officialBits.push(`time to peak ${c.officialTimeToPeakMs.a} vs ${c.officialTimeToPeakMs.b} ms (diff ${c.officialTimeToPeakMs.diff})`);
+      if (c.officialTimeToTakeoffMs) officialBits.push(`time to takeoff ${c.officialTimeToTakeoffMs.a} vs ${c.officialTimeToTakeoffMs.b} ms (diff ${c.officialTimeToTakeoffMs.diff})`);
+      return {
+        ok: true,
+        summary: `${c.a.label} (${c.a.kind}) vs ${c.b.label} (${c.b.kind}, ${c.b.includedCount} attempts): ${officialBits.length ? `OFFICIAL — ${officialBits.join("; ")}. ` : "official values only exist when both sides are individual attempts. "}Display-resolution: peaks ${c.displayPeakN?.a} vs ${c.displayPeakN?.b} N, mean difference ${c.meanDiffOverOverlapN} N over the overlapping window ${c.overlapStartMs}–${c.overlapEndMs} ms.`,
+        evidence,
+        data: c,
+      };
+    }
+  );
+
+  /* 19 — getLoadVelocityProfile */
+  add(
+    "getLoadVelocityProfile",
+    "Live load-velocity profiles rebuilt from stored valid reps: observed points, fitted line (two-point at 2 loads, least squares at 3+), R² only with 3+ distinct loads, excluded reps with reasons, and change vs the previous session's profile. No 1RM prediction or load prescription exists anywhere in this system.",
+    { exercise: z.string().min(2).max(60).optional() },
+    { exercise: { type: "string" } },
+    [],
+    (input) => {
+      let sessions = liveLoadVelocityProfiles(ctx.facilityId, ctx.athleteId);
+      if (to) sessions = sessions.filter((s) => s.date <= to);
+      if (input.exercise) sessions = sessions.filter((s) => s.exercise === input.exercise);
+      if (sessions.length === 0) {
+        return { ok: true, summary: "No stored velocity reps — no load-velocity profile can be built.", evidence: [], data: null, insufficient: "no velocity rep data" };
+      }
+      const latest = sessions[0];
+      const previous = sessions.find((s) => s.exercise === latest.exercise && s.date < latest.date) ?? null;
+      const p = latest.profile;
+      const pointVals = p.points.flatMap((pt) => [pt.loadKg, round(pt.meanVelocityMs, 2), pt.repCount]);
+      const evidence: EvidenceRef[] = [
+        {
+          id: `lv:${latest.exercise}:${latest.date}`,
+          type: "lv_profile",
+          label: `${latest.exercise.replace(/_/g, " ")} ${latest.date}: ${p.status === "fitted" ? `${p.distinctLoads}-load ${p.method === "two_point" ? "two-point" : "least-squares"} profile, slope ${round(p.slope!, 4)}` : "insufficient data"}`,
+          values: [...(p.slope != null ? [round(p.slope, 4)] : []), ...(p.intercept != null ? [round(p.intercept, 2)] : []), ...(p.r2 != null ? [round(p.r2, 3)] : []), p.distinctLoads, p.validReps, p.excludedReps.length, ...pointVals].slice(0, 40),
+          date: latest.date,
+        },
+      ];
+      let slopeChange: number | null = null;
+      if (previous && p.slope != null && previous.profile.slope != null) {
+        slopeChange = round(p.slope - previous.profile.slope, 4);
+        evidence.push({
+          id: `lv:${previous.exercise}:${previous.date}`,
+          type: "lv_profile",
+          label: `Previous ${previous.exercise.replace(/_/g, " ")} profile (${previous.date}): slope ${round(previous.profile.slope, 4)}`,
+          values: [round(previous.profile.slope, 4), ...(previous.profile.intercept != null ? [round(previous.profile.intercept, 2)] : []), previous.profile.distinctLoads, ...(slopeChange != null ? [slopeChange] : [])],
+          date: previous.date,
+        });
+      }
+      return {
+        ok: true,
+        summary:
+          p.status === "insufficient"
+            ? `${latest.exercise.replace(/_/g, " ")} (${latest.date}): insufficient for a profile — ${p.distinctLoads} distinct load(s); at least 2 required. Observed points are still real data.`
+            : `${latest.exercise.replace(/_/g, " ")} (${latest.date}): ${p.distinctLoads}-load ${p.method === "two_point" ? "two-point" : "least-squares"} profile, slope ${round(p.slope!, 4)} (m/s)/kg${p.r2 != null ? `, R² ${round(p.r2, 3)}` : " (R² not meaningful for 2 points)"}${slopeChange != null ? `; slope change vs ${previous!.date}: ${slopeChange}` : ""}. ${p.excludedReps.length} rep(s) excluded by explicit quality flag.`,
+        evidence,
+        data: {
+          latest: { exercise: latest.exercise, date: latest.date, profile: p },
+          previous: previous ? { exercise: previous.exercise, date: previous.date, profile: previous.profile } : null,
+          slopeChange,
+          allSessions: sessions.map((s) => ({ exercise: s.exercise, date: s.date, status: s.profile.status, distinctLoads: s.profile.distinctLoads })),
+        },
+        insufficient: p.status === "insufficient" ? "fewer than 2 distinct loads" : undefined,
       };
     }
   );

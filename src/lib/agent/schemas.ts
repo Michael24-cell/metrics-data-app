@@ -31,6 +31,9 @@ export const EvidenceTypeSchema = z.enum([
   "baseline", // reference or recent baseline computation
   "comparability", // a comparability-gate result for a window
   "quality", // data completeness / quality snapshot
+  "cohort", // team/position cohort statistics (population SD contract)
+  "curve", // a prepared force-time curve or deterministic curve comparison
+  "lv_profile", // a live load-velocity profile rebuilt from stored reps
 ]);
 export type EvidenceType = z.infer<typeof EvidenceTypeSchema>;
 
