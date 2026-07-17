@@ -210,6 +210,18 @@ export default async function RosterPage({
                       <a href={`/athletes/${r.athleteId}`} style={{ fontWeight: 600, color: "var(--ink)" }}>{r.name}</a>
                       <div style={{ fontSize: 11.5, color: "var(--ink-mute)" }}>
                         {r.position ?? "—"}{r.mostRecentDate ? ` · ${r.mostRecentDate}` : ""}
+                        {r.mostRecent != null && effectiveMetric && (
+                          <>
+                            {" · "}
+                            <a
+                              className="no-print"
+                              href={`/agent?athlete=${r.athleteId}&q=${encodeURIComponent("How does this athlete compare with the team?")}&metric=${effectiveMetric}`}
+                              style={{ color: "var(--accent)" }}
+                            >
+                              ask →
+                            </a>
+                          </>
+                        )}
                       </div>
                     </td>
                     {r.mostRecent == null ? (

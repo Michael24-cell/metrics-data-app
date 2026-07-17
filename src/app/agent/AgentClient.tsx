@@ -43,6 +43,10 @@ interface Props {
   configuredMode: string;
   initialQuestionKey?: string;
   initialFindingId?: string;
+  /** free-text question passed from a contextual launch point */
+  initialQuestion?: string;
+  /** page context (test/metric) the trainer launched from */
+  initialContext?: { testType?: string; metricKey?: string };
 }
 
 interface ResolvedEvidence {
@@ -266,6 +270,11 @@ export default function AgentClient(props: Props) {
   const [pendingAction, setPendingAction] = useState<ReviewAction | null>(null);
   const [reviewNote, setReviewNote] = useState("");
   const [editText, setEditText] = useState("");
+  const [questionText, setQuestionText] = useState(props.initialQuestion ?? "");
+  const [askCtx, setAskCtx] = useState<{ testType?: string; metricKey?: string }>({
+    testType: props.initialContext?.testType || undefined,
+    metricKey: props.initialContext?.metricKey || undefined,
+  });
   const viewRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const sheetRef = useRef<HTMLDivElement | null>(null);
 
@@ -292,6 +301,11 @@ export default function AgentClient(props: Props) {
   );
   const reportRun = reportRuns.find((r) => r.runId === reportId) ?? reportRuns[reportRuns.length - 1];
   const answerRun = answerRuns.find((r) => r.runId === answerId) ?? null;
+  /** a question run that returned a clarification instead of an answer */
+  const clarifyRun = useMemo(
+    () => runs.find((r) => r.runId === answerId && r.clarification) ?? null,
+    [runs, answerId]
+  );
   const report = reportRun?.report;
   const reportReviews = reviews
     .filter((rv) => reportRun && rv.runId === reportRun.runId)
@@ -338,13 +352,48 @@ export default function AgentClient(props: Props) {
     [athlete.id, persistRun]
   );
 
-  /* deep-link entry points (?ask=why_finding&finding=...) */
+  const askFree = useCallback(
+    (q: string) => {
+      const trimmed = q.trim();
+      if (trimmed.length < 3) return;
+      setQuestionText(trimmed);
+      void execute(
+        {
+          task: "question",
+          question: trimmed,
+          context: askCtx.testType || askCtx.metricKey ? askCtx : undefined,
+        },
+        "freeform"
+      );
+    },
+    [execute, askCtx]
+  );
+
+  /* keep the visible context in sync with what the router actually used */
+  useEffect(() => {
+    const src = answerRun?.routedIntent;
+    if (src && (src.metricKey || src.testType)) {
+      setAskCtx((prev) => ({ testType: src.testType ?? prev.testType, metricKey: src.metricKey ?? prev.metricKey }));
+    }
+  }, [answerRun]);
+
+  /* deep-link entry points (?ask=why_finding&finding=... or ?q=free+text) */
   useEffect(() => {
     if (props.initialQuestionKey && (QUESTION_KEYS as readonly string[]).includes(props.initialQuestionKey)) {
       setView("ask");
       void execute(
         { task: "question", questionKey: props.initialQuestionKey, findingId: props.initialFindingId },
         "question"
+      );
+    } else if (props.initialQuestion) {
+      setView("ask");
+      void execute(
+        {
+          task: "question",
+          question: props.initialQuestion,
+          context: props.initialContext?.testType || props.initialContext?.metricKey ? { testType: props.initialContext.testType || undefined, metricKey: props.initialContext.metricKey || undefined } : undefined,
+        },
+        "freeform"
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -800,7 +849,51 @@ export default function AgentClient(props: Props) {
       {/* ================= ASK ================= */}
       {view === "ask" && (
         <section role="tabpanel" aria-label="Ask the data">
-          <p className="ai-lede">Seven focused questions — every answer cites the records it used.</p>
+          <p className="ai-lede">
+            Ask about this athlete&apos;s tests, metrics, comparisons, curves, or data quality — every answer is
+            grounded in validated records and cites what it used. Questions outside that scope are declined, not guessed.
+          </p>
+
+          {/* free-text question */}
+          <form
+            onSubmit={(e) => { e.preventDefault(); askFree(questionText); }}
+            style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}
+          >
+            <input
+              type="text"
+              value={questionText}
+              onChange={(e) => setQuestionText(e.target.value)}
+              placeholder="e.g. How does this athlete compare with other guards on jump height?"
+              aria-label="Ask a question about this athlete's data"
+              maxLength={500}
+              style={{ flex: "1 1 320px", minWidth: 260, padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line-strong)", background: "var(--bg2)", color: "var(--ink)", fontSize: 14 }}
+            />
+            <button className="btn" type="submit" disabled={!!busy || questionText.trim().length < 3}>
+              {busy === "freeform" ? "Answering…" : "Ask"}
+            </button>
+          </form>
+
+          {/* active context — visible and editable */}
+          {(askCtx.testType || askCtx.metricKey) && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+              <span className="fb-ctx">Context:</span>
+              {askCtx.testType && (
+                <span className="chip">
+                  Test: {askCtx.testType.toUpperCase().replace("_", " ")}{" "}
+                  <button aria-label="clear test context" onClick={() => setAskCtx((p) => ({ ...p, testType: undefined }))} style={{ background: "none", border: "none", color: "var(--ink-mute)", cursor: "pointer", padding: 0 }}>×</button>
+                </span>
+              )}
+              {askCtx.metricKey && (
+                <span className="chip">
+                  Metric: {metricLabel(askCtx.metricKey) ?? askCtx.metricKey}{" "}
+                  <button aria-label="clear metric context" onClick={() => setAskCtx((p) => ({ ...p, metricKey: undefined }))} style={{ background: "none", border: "none", color: "var(--ink-mute)", cursor: "pointer", padding: 0 }}>×</button>
+                </span>
+              )}
+              <span className="fb-ctx">— follow-ups like “what about normalized force?” use this.</span>
+            </div>
+          )}
+
+          <h2 className="ai-h" style={{ color: "var(--ink-mute)", marginTop: 6 }}>Guided questions</h2>
           <div className="q-grid">
             {QUESTION_KEYS.map((k) => (
               <button key={k} className="q-card" data-active={answerRun?.answer?.questionKey === k} disabled={!!busy}
@@ -810,20 +903,86 @@ export default function AgentClient(props: Props) {
             ))}
           </div>
 
-          {answerRun?.answer ? (
+          {/* clarification: the router asks for one basis instead of silently choosing */}
+          {clarifyRun?.clarification && (
+            <article className="ans" style={{ borderLeft: "3px solid var(--watch)" }}>
+              <div className="eyebrow">One thing first</div>
+              <h2 className="ans-q">{clarifyRun.clarification.question}</h2>
+              <p className="ans-summary" style={{ marginBottom: 10 }}>Asked: “{clarifyRun.question}”</p>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {clarifyRun.clarification.options.map((o) => (
+                  <button key={o.label} className="btn secondary" disabled={!!busy} onClick={() => askFree(o.question)}>
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </article>
+          )}
+
+          {!clarifyRun && answerRun?.answer ? (
             <article className="ans">
               <div className="eyebrow">Answer</div>
               <h2 className="ans-q">{answerRun.answer.question}</h2>
-              <p className="ans-summary">{answerRun.answer.summary}</p>
+              {answerRun.answer.directAnswer ? (
+                <p className="ans-summary" style={{ fontSize: 16, color: "var(--ink)" }}>{answerRun.answer.directAnswer}</p>
+              ) : (
+                <p className="ans-summary">{answerRun.answer.summary}</p>
+              )}
               <SafetyNotice run={answerRun} />
+
+              {answerRun.answer.keyValues && answerRun.answer.keyValues.length > 0 && (
+                <div className="statrow" style={{ margin: "12px 0" }}>
+                  {answerRun.answer.keyValues.map((kv) => (
+                    <div className="stat" key={kv.label}>
+                      <div className="k">{kv.label}</div>
+                      <div className="v">{kv.value}{kv.unit && <small>{kv.unit}</small>}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {answerRun.answer.comparisonBasis && (
+                <p className="fb-ctx" style={{ marginTop: 4 }}>Comparison basis: {answerRun.answer.comparisonBasis}</p>
+              )}
+
               <div style={{ marginTop: 14 }}>
+                <div className="eyebrow" style={{ marginBottom: 6 }}>Why</div>
                 {answerRun.answer.claims.map((c) => <FindingBlock key={c.claimId} claim={c} bucket={bucketOf(c, false)} quiet />)}
               </div>
-              <p className="fb-ctx" style={{ marginTop: 8 }}>Answered {shortTime(answerRun.createdAt)}</p>
+
+              {answerRun.answer.limitations && answerRun.answer.limitations.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>Limitations</div>
+                  <ul style={{ fontSize: 13, color: "var(--ink-dim)", paddingLeft: 18, margin: 0 }}>
+                    {answerRun.answer.limitations.map((l) => <li key={l}>{l}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              {answerRun.answer.suggestedNext && answerRun.answer.suggestedNext.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>Review next</div>
+                  <ul style={{ fontSize: 13, color: "var(--ink-dim)", paddingLeft: 18, margin: 0 }}>
+                    {answerRun.answer.suggestedNext.map((s) => <li key={s}>{s}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              {answerRun.answer.followUps && answerRun.answer.followUps.length > 0 && (
+                <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {answerRun.answer.followUps.map((f) => (
+                    <button key={f} className="btn secondary" disabled={!!busy} onClick={() => askFree(f)} style={{ fontSize: 12.5 }}>
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <p className="fb-ctx" style={{ marginTop: 10 }}>Answered {shortTime(answerRun.createdAt)}</p>
             </article>
-          ) : (
-            <p className="quiet-line" style={{ marginTop: 20 }}>Pick a question above — the answer will appear here.</p>
-          )}
+          ) : !clarifyRun ? (
+            <p className="quiet-line" style={{ marginTop: 20 }}>Type a question or pick a guided one — the answer will appear here.</p>
+          ) : null}
 
           {answerRuns.filter((r) => r.runId !== answerRun?.runId).length > 0 && (
             <div style={{ marginTop: 28 }}>

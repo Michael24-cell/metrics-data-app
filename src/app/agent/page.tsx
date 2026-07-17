@@ -67,6 +67,8 @@ export default async function AgentPage({
       configuredMode={resolveMode()}
       initialQuestionKey={sp.ask}
       initialFindingId={sp.finding}
+      initialQuestion={sp.q}
+      initialContext={{ testType: sp.test, metricKey: sp.metric }}
     />
   );
 }

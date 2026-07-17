@@ -200,6 +200,16 @@ export default async function AthletePage({
           ) : (
             <div className="callout">No trainer-facing metrics are registered for this test yet.</div>
           )}
+          {(selDef || pointDef) && (
+            <div className="no-print" style={{ marginTop: 8, fontSize: 12.5 }}>
+              <a
+                href={`/agent?athlete=${id}&q=${encodeURIComponent(`What changed in ${(selDef ?? pointDef)!.shortLabel}?`)}&test=${selectedTest}&metric=${(selDef ?? pointDef)!.key}`}
+                style={{ color: "var(--accent)" }}
+              >
+                Ask the agent about this metric →
+              </a>
+            </div>
+          )}
         </div>
       )}
 
@@ -296,6 +306,13 @@ export default async function AthletePage({
               flagPct={metricAsym.flagPct}
               sourceLabel={selDef.label}
             />
+          )}
+          {metricAsym.points.length > 0 && (
+            <div className="no-print" style={{ marginTop: 8, fontSize: 12.5 }}>
+              <a href={`/agent?athlete=${id}&q=${encodeURIComponent(`Which side is stronger on ${selDef.shortLabel}, and did it change?`)}&test=${selectedTest}&metric=${selDef.key}`} style={{ color: "var(--accent)" }}>
+                Explain this asymmetry →
+              </a>
+            </div>
           )}
         </div>
       )}
@@ -417,6 +434,13 @@ export default async function AthletePage({
           <Suspense>
             <CurveWorkspace {...curveData} />
           </Suspense>
+          {curveData.options.length >= 2 && (
+            <div className="no-print" style={{ marginTop: 8, fontSize: 12.5 }}>
+              <a href={`/agent?athlete=${id}&q=${encodeURIComponent(`Compare the latest ${selectedTest === "imtp" ? "IMTP" : "CMJ"} curve with the previous session.`)}&test=${selectedTest}`} style={{ color: "var(--accent)" }}>
+                Compare these curves with the agent →
+              </a>
+            </div>
+          )}
         </div>
       )}
 
@@ -580,6 +604,11 @@ export default async function AthletePage({
               {s.exercise.replace(/_/g, " ")} session(s) on record.
             </div>
           )}
+          <div className="no-print" style={{ marginTop: 8, fontSize: 12.5 }}>
+            <a href={`/agent?athlete=${id}&q=${encodeURIComponent("Is the load-velocity profile changing?")}&test=vbt`} style={{ color: "var(--accent)" }}>
+              Explain this profile →
+            </a>
+          </div>
         </div>
       ))}
 

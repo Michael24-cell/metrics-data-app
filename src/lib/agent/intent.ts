@@ -142,8 +142,10 @@ export function routeQuestion(rawText: string, ctx: QuestionContext = {}): Route
     };
   }
 
-  /* fixed time point (e.g. "force at 100 ms", "100ms") */
-  const msMatch = t.match(/\b(50|100|150|200|250|300)\s?ms\b/);
+  /* fixed time point (e.g. "force at 100 ms", "100ms") — but "0-300 ms" is the
+     whole window, not a request for the 300 ms point */
+  const rangeAsk = /\b(0|zero)\s?[-–—to]+\s?300\s?ms\b/.test(t);
+  const msMatch = rangeAsk ? null : t.match(/\b(50|100|150|200|250|300)\s?ms\b/);
   const pointMs = msMatch ? Number(msMatch[1]) : undefined;
   const forceWindowish = /\bforce (0|zero)\s?[-–to]+\s?300\b|\bearly force\b/.test(t) || (pointMs != null && /\bforce\b/.test(t));
 

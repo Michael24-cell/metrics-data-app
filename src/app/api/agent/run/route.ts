@@ -21,6 +21,18 @@ const BodySchema = z
     athleteId: z.string().min(4).max(60),
     task: z.enum(["report", "question"]),
     questionKey: z.enum(QUESTION_KEYS).optional(),
+    /** free-text trainer question (V2) — used when questionKey is absent */
+    question: z.string().min(3).max(500).optional(),
+    /** page context the question was asked from (test/metric/window hints) */
+    context: z
+      .object({
+        testType: z.string().max(30).optional(),
+        metricKey: z.string().max(60).optional(),
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      })
+      .strict()
+      .optional(),
     findingId: z.string().max(60).optional(),
     asOf: z
       .string()
@@ -55,6 +67,8 @@ export async function POST(req: NextRequest) {
       athleteName: athlete.display_name,
       task: parsed.data.task,
       questionKey: parsed.data.questionKey,
+      question: parsed.data.question,
+      context: parsed.data.context,
       findingId: parsed.data.findingId,
       asOf: parsed.data.asOf,
     });
