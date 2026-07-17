@@ -67,6 +67,9 @@ export const ClaimTypeSchema = z.enum([
   "data_quality",
   "data_gap",
   "context",
+  "cohort_comparison", // team/position standing under the cohort contract
+  "curve_comparison", // deterministic prepared-curve comparison
+  "load_velocity_profile", // live-rebuilt L-V profile statement
 ]);
 export type ClaimType = z.infer<typeof ClaimTypeSchema>;
 

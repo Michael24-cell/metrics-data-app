@@ -61,7 +61,7 @@ const SUBMIT_REPORT_SCHEMA: Record<string, unknown> = {
         required: ["text", "claimType", "evidenceIds", "confidence"],
         properties: {
           text: { type: "string" },
-          claimType: { type: "string", enum: ["trend", "baseline_comparison", "asymmetry", "criteria_status", "strategy_shift", "conflict", "agreement", "data_quality", "data_gap", "context"] },
+          claimType: { type: "string", enum: ["trend", "baseline_comparison", "asymmetry", "criteria_status", "strategy_shift", "conflict", "agreement", "data_quality", "data_gap", "context", "cohort_comparison", "curve_comparison", "load_velocity_profile"] },
           metricKey: { type: "string" },
           comparisonWindow: { type: "string" },
           evidenceIds: { type: "array", items: { type: "string" } },
@@ -85,6 +85,20 @@ const SUBMIT_ANSWER_SCHEMA: Record<string, unknown> = {
   properties: {
     summary: { type: "string" },
     claims: (SUBMIT_REPORT_SCHEMA.properties as Record<string, unknown>).claims,
+    directAnswer: { type: "string", description: "One- or two-sentence direct answer, shown first." },
+    keyValues: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["label", "value"],
+        properties: { label: { type: "string" }, value: { type: "string" }, unit: { type: "string" } },
+      },
+    },
+    comparisonBasis: { type: "string", description: "What the answer compares against (cohort, baseline, window)." },
+    limitations: { type: "array", items: { type: "string" } },
+    suggestedNext: { type: "array", items: { type: "string" } },
+    followUps: { type: "array", items: { type: "string" } },
   },
 };
 
@@ -100,6 +114,10 @@ export async function runLiveAgent(
   executor: ToolExecutor,
   opts: {
     questionKey?: QuestionKey;
+    /** free-text trainer question (V2) — used instead of questionKey */
+    freeQuestion?: string;
+    /** deterministic router output, passed as advisory context */
+    routedHint?: string;
     createMessage?: CreateMessage;
     model?: string;
     maxSteps?: number;
@@ -130,7 +148,7 @@ export async function runLiveAgent(
   const evidenceRegistry = new Map<string, EvidenceRef>();
   const usage = { inputTokens: 0, outputTokens: 0 };
   const messages: Anthropic.MessageParam[] = [
-    { role: "user", content: taskPrompt(task, opts.questionKey) },
+    { role: "user", content: taskPrompt(task, opts.questionKey, opts.freeQuestion, opts.routedHint) },
   ];
 
   let steps = 0;

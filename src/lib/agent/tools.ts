@@ -839,6 +839,11 @@ export function createToolExecutor(ctx: ToolContext): ToolExecutor {
       }
       for (const fp of c.officialForcePointDiffs ?? []) values.push(fp.ms, fp.a, fp.b, fp.diff);
       values.push(res.a.includedCount, res.b.includedCount);
+      if (c.overlapStartMs != null) values.push(c.overlapStartMs);
+      if (c.overlapEndMs != null) values.push(c.overlapEndMs);
+      // numbers embedded in the curve labels (attempt numbers, rolling window
+      // sizes) so claims quoting the labels stay numerically grounded
+      values.push(...textNumbers(c.a.label), ...textNumbers(c.b.label));
       const evidence: EvidenceRef[] = [
         {
           id: `curve:${testType}:${res.a.token}..vs..${res.b.token}`,

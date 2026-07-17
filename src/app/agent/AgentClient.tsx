@@ -98,6 +98,9 @@ function claimHeadline(c: Claim): string {
     case "data_quality": return "Data quality";
     case "data_gap": return "Missing data";
     case "context": return "Training & staff context";
+    case "cohort_comparison": return `${m ?? "Metric"} vs team/position`;
+    case "curve_comparison": return "Force-time curve comparison";
+    case "load_velocity_profile": return "Load–velocity profile";
   }
 }
 

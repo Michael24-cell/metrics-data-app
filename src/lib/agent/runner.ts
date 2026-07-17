@@ -34,6 +34,8 @@ import {
   TraceStep,
 } from "./schemas";
 import { scriptedAnswer, scriptedReport } from "./scripted";
+import { scriptedFreeform } from "./freeform";
+import { QuestionContext, RoutedIntent, routeQuestion } from "./intent";
 import { createToolExecutor, TOOL_SCHEMA_VERSION, ToolExecutor } from "./tools";
 
 export interface RunAgentInput {
@@ -42,6 +44,10 @@ export interface RunAgentInput {
   athleteName: string;
   task: "report" | "question";
   questionKey?: QuestionKey;
+  /** free-text question (used when questionKey is absent) */
+  question?: string;
+  /** page context the question was asked from (test/metric/window hints) */
+  context?: QuestionContext;
   findingId?: string;
   asOf?: string;
   /** override for tests; production resolves from env + key presence */
@@ -122,9 +128,30 @@ export async function runAgent(input: RunAgentInput, deps: RunAgentDeps = {}): P
   });
   const inputSnapshotHash = createHash("sha256").update(snapshotBasis).digest("hex").slice(0, 16);
 
+  /* ---- free-text questions: bounded intent routing (deterministic) ---- */
+  const isFreeform = input.task === "question" && !!input.question && !input.questionKey;
+  let routed: RoutedIntent | undefined;
+  if (isFreeform) {
+    const routeStarted = Date.now();
+    routed = routeQuestion(input.question!, input.context ?? {});
+    trace.push({
+      step: trace.length + 1,
+      stage: "intake",
+      tool: "routeIntent",
+      inputSummary: input.question!.slice(0, 160),
+      resultSummary: `intent=${routed.kind}${routed.metricKey ? ` metric=${routed.metricKey}` : ""}${routed.cohort ? ` cohort=${routed.cohort}` : ""}${routed.clarification ? " → clarification" : ""}${routed.unsupported ? " → refused" : ""}`,
+      evidenceIds: [],
+      status: routed.unsupported ? "insufficient" : "ok",
+      ms: Date.now() - routeStarted,
+    });
+  }
+
   /* ---- stage 2: one bounded Evidence Agent ---- */
   stage = "evidence_agent";
   let mode = resolveMode(input.modeOverride);
+  // Clarifications and refusals never need a model call: force the
+  // deterministic path so live mode cannot answer around the router's gate.
+  if (routed?.clarification || routed?.unsupported) mode = mode === "fixture" ? "fixture" : "scripted";
   let fallback: { from: AgentMode; reason: string } | undefined;
   let provider = "deterministic";
   let model = "scripted-workflow-v1";
@@ -133,7 +160,70 @@ export async function runAgent(input: RunAgentInput, deps: RunAgentDeps = {}): P
   let report: GeneratedReport | undefined;
   let answer: AgentAnswer | undefined;
 
+  const routedIntentSummary = routed
+    ? { kind: routed.kind, testType: routed.testType, metricKey: routed.metricKey, cohort: routed.cohort, requiredTools: routed.requiredTools }
+    : undefined;
+
+  /* clarification: return before any composing — the trainer picks a basis first */
+  if (routed?.clarification) {
+    return {
+      runId,
+      facilityId: input.facilityId,
+      athleteId: input.athleteId,
+      athleteName: input.athleteName,
+      task: "question",
+      question: input.question,
+      asOf: input.asOf,
+      createdAt: now(),
+      mode,
+      trace,
+      clarification: routed.clarification,
+      routedIntent: routedIntentSummary,
+      eval: {
+        status: "pass",
+        checks: [{ name: "clarification_only", status: "pass", detail: "No claims were made — the router asked for one clarification before answering, instead of silently choosing a comparison basis." }],
+      },
+      provenance: {
+        runId,
+        mode,
+        provider: "deterministic",
+        model: "intent-router-v1",
+        promptVersion: PROMPT_VERSION,
+        toolSchemaVersion: TOOL_SCHEMA_VERSION,
+        inputSnapshotHash,
+        methodVersions: {},
+        thresholdVersions: [],
+        knowledgeVersions: { intent_router: "src/lib/agent/intent.ts" },
+        toolCallCount: trace.filter((t) => t.tool && t.stage !== "evaluation").length,
+        latencyMs: Date.now() - startedAt,
+      },
+    };
+  }
+
   const buildFromScripted = async () => {
+    if (isFreeform) {
+      const s = await scriptedFreeform(executor, routed!);
+      answer = {
+        answerId: `ans_${inputSnapshotHash}_${randomUUID().slice(0, 8)}`,
+        athleteId: input.athleteId,
+        facilityId: input.facilityId,
+        task: "question",
+        question: input.question!,
+        asOf: input.asOf,
+        generatedAt: now(),
+        summary: s.summary,
+        claims: s.claims,
+        dataUsed: collectDataUsed(s.claims),
+        directAnswer: s.directAnswer,
+        keyValues: s.keyValues,
+        comparisonBasis: s.comparisonBasis,
+        limitations: s.limitations,
+        suggestedNext: s.suggestedNext,
+        followUps: s.followUps,
+        contextUsed: s.contextUsed,
+      };
+      return;
+    }
     if (input.task === "report") {
       const s = await scriptedReport(executor);
       report = {
@@ -174,6 +264,10 @@ export async function runAgent(input: RunAgentInput, deps: RunAgentDeps = {}): P
     try {
       const live = await runLiveAgent(input.task, executor, {
         questionKey: input.questionKey,
+        freeQuestion: isFreeform ? input.question : undefined,
+        routedHint: routed
+          ? `Router hints (deterministic, advisory): intent=${routed.kind}${routed.testType ? `, test=${routed.testType}` : ""}${routed.metricKey ? `, metric=${routed.metricKey}` : ""}${routed.cohort ? `, cohort=${routed.cohort}` : ""}${routed.curveA ? `, curves=${routed.curveA} vs ${routed.curveB}` : ""}. Suggested tools: ${routed.requiredTools.join(", ") || "(none)"}.`
+          : undefined,
         createMessage: deps.createMessage,
       });
       provider = "anthropic";
@@ -228,13 +322,22 @@ export async function runAgent(input: RunAgentInput, deps: RunAgentDeps = {}): P
           athleteId: input.athleteId,
           facilityId: input.facilityId,
           task: "question",
-          questionKey: input.questionKey ?? "what_changed",
-          question: QUESTION_LABELS[input.questionKey ?? "what_changed"],
+          questionKey: isFreeform ? undefined : (input.questionKey ?? "what_changed"),
+          question: isFreeform ? input.question! : QUESTION_LABELS[input.questionKey ?? "what_changed"],
           asOf: input.asOf,
           generatedAt: now(),
           summary: sub.summary,
           claims,
           dataUsed: collectDataUsed(claims),
+          directAnswer: sub.directAnswer,
+          keyValues: sub.keyValues,
+          comparisonBasis: sub.comparisonBasis,
+          limitations: sub.limitations,
+          suggestedNext: sub.suggestedNext,
+          followUps: sub.followUps,
+          contextUsed: routed
+            ? { testType: routed.testType, metricKey: routed.metricKey, cohort: routed.cohort }
+            : undefined,
         };
       }
     } catch (e) {
@@ -303,12 +406,14 @@ export async function runAgent(input: RunAgentInput, deps: RunAgentDeps = {}): P
     athleteName: input.athleteName,
     task: input.task,
     questionKey: input.questionKey,
+    question: isFreeform ? input.question : undefined,
     asOf: input.asOf,
     createdAt: now(),
     mode,
     trace,
     report,
     answer,
+    routedIntent: routedIntentSummary,
     eval: evalResult,
     provenance: {
       runId,

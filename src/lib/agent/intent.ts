@@ -66,8 +66,10 @@ export interface RoutedIntent {
 
 const PROHIBITED_PATTERNS: { re: RegExp; reason: string; nearest: string }[] = [
   {
+    // NOTE: refusal wording is echoed into trainer-facing answers, so it must
+    // itself stay clean under the deterministic prohibited-language checker.
     re: /\b(ready to (play|compete|return)|clear(ed)? (to|for)|clearance|return[- ]to[- ]play|fit to play)\b/i,
-    reason: "This system never makes readiness, clearance, or return-to-play decisions — those stay with the athlete's qualified team.",
+    reason: "This system never makes readiness or availability decisions — those stay with the athlete's qualified team. It can only show measured evidence.",
     nearest: "What changed in this athlete's recent results?",
   },
   {
@@ -82,7 +84,7 @@ const PROHIBITED_PATTERNS: { re: RegExp; reason: string; nearest: string }[] = [
   },
   {
     re: /\b(predict\w*|likelihood|probability|risk) (of )?(injur\w*|getting hurt)\b/i,
-    reason: "Injury prediction and risk scoring are outside this system's validated scope.",
+    reason: "Forecasting how likely someone is to get hurt is outside this system's validated scope — it reports measured performance only.",
     nearest: "What information is missing?",
   },
   {
