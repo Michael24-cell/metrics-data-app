@@ -6,6 +6,7 @@
  */
 
 import { Claim, EvalCheck, EvalResult, EvidenceRef, EvidenceType, GeneratedReportSchema, AgentAnswerSchema, GeneratedReport, AgentAnswer } from "./schemas";
+import { METRICS } from "../config/metrics";
 
 export type EvidenceResolver = (type: EvidenceType, id: string) => { ok: boolean; error?: string };
 
@@ -18,6 +19,7 @@ const PROHIBITED: { name: string; re: RegExp }[] = [
   { name: "injury prediction", re: /\b(predicts?|predicted|prediction of|likelihood of|probability of)\s+(an?\s+)?injur\w*/i },
   { name: "risk/readiness score", re: /\b(injury risk|risk score|readiness score|risk level)\b/i },
   { name: "final-call language", re: /\b(ready to (play|compete|return)|safe to (play|train|return)|good to go)\b/i },
+  { name: "1RM/prescription language", re: /\b(1\s?rm|one[- ]rep(etition)? max|prescrib\w+|estimated max(imum)? (lift|load))\b/i },
 ];
 
 /** warn: overconfident or unqualified phrasing */
@@ -27,6 +29,7 @@ const strip = (s: string) =>
   s
     .replace(/\d{4}-\d{2}-\d{2}/g, " ") // ISO dates
     .replace(/\bv\d+(\.\d+)*(-[a-z]+)?\b/gi, " ") // method versions
+    .replace(/@\s?\d+\s?ms\b/gi, " ") // metric-label artifacts like "Force @100ms"
     .replace(/±/g, " ");
 
 const numbersIn = (s: string): number[] =>
@@ -151,6 +154,65 @@ export function evaluateOutput(
     lowQuality && !disclosed ? "warn" : "pass",
     lowQuality && !disclosed ? "Data-completeness score is low but no data-quality note or gap claim discloses it." : "Data-quality state is disclosed where relevant."
   );
+
+  /* V2-1 — cohort claims must carry cohort evidence (sample size stays addressable) */
+  const cohortClaims = claims.filter((c) => c.claimType === "cohort_comparison");
+  const cohortMissing = cohortClaims.filter((c) => !c.evidenceRefs.some((r) => r.type === "cohort"));
+  push(
+    "cohort_grounding",
+    cohortMissing.length ? "fail" : "pass",
+    cohortMissing.length
+      ? `${cohortMissing.length} cohort-comparison claim(s) cite no cohort evidence — sample size and cohort basis must be evidence-addressable.`
+      : cohortClaims.length
+        ? `All ${cohortClaims.length} cohort claims cite cohort evidence (mean/median/SD/n).`
+        : "No cohort-comparison claims made."
+  );
+
+  /* V2-2 — curve claims must carry prepared-curve evidence */
+  const curveClaims = claims.filter((c) => c.claimType === "curve_comparison");
+  const curveMissing = curveClaims.filter((c) => !c.evidenceRefs.some((r) => r.type === "curve"));
+  push(
+    "curve_grounding",
+    curveMissing.length ? "fail" : "pass",
+    curveMissing.length
+      ? `${curveMissing.length} curve-comparison claim(s) cite no prepared-curve evidence.`
+      : curveClaims.length
+        ? `All ${curveClaims.length} curve claims cite deterministic curve-comparison evidence.`
+        : "No curve-comparison claims made."
+  );
+
+  /* V2-3 — load-velocity claims must carry lv_profile evidence */
+  const lvClaims = claims.filter((c) => c.claimType === "load_velocity_profile");
+  const lvMissing = lvClaims.filter((c) => !c.evidenceRefs.some((r) => r.type === "lv_profile"));
+  push(
+    "lv_profile_grounding",
+    lvMissing.length ? "fail" : "pass",
+    lvMissing.length
+      ? `${lvMissing.length} load-velocity claim(s) cite no live-profile evidence.`
+      : lvClaims.length
+        ? `All ${lvClaims.length} load-velocity claims cite the rebuilt profile evidence.`
+        : "No load-velocity claims made."
+  );
+
+  /* V2-4 — key-value units must come from cited evidence (unit fidelity) */
+  const v2 = output as { keyValues?: { label: string; value: string; unit?: string }[]; dataUsed?: EvidenceRef[] };
+  if (v2.keyValues && v2.keyValues.length > 0) {
+    // units registered in the metric registry are legitimate app units by
+    // definition — the check catches INVENTED units, not registry ones
+    const allowedUnits = new Set<string>(["%", "", "ms", "/100", ...Object.values(METRICS).map((m) => m.unit)]);
+    for (const r of v2.dataUsed ?? []) if (r.unit) allowedUnits.add(r.unit);
+    for (const c of claims) for (const r of c.evidenceRefs) if (r.unit) allowedUnits.add(r.unit);
+    const badUnits = v2.keyValues.filter((kv) => kv.unit && !allowedUnits.has(kv.unit) && !kv.unit.includes("/"));
+    push(
+      "unit_fidelity",
+      badUnits.length ? "warn" : "pass",
+      badUnits.length
+        ? `Key values carry units not present in any cited evidence: ${badUnits.map((k) => `${k.label} (${k.unit})`).join(", ")}.`
+        : "Every key-value unit comes from cited evidence."
+    );
+  } else {
+    push("unit_fidelity", "pass", "No key values presented.");
+  }
 
   /* 10 — no verdict aggregation */
   const verdicty = /\b(overall (readiness|score)|composite (score|index)|(\d+|\w+)\/(10|100) readiness)\b/i.test(joined);

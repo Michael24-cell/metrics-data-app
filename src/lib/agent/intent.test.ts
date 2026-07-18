@@ -88,10 +88,11 @@ describe("intent router — honest refusal", () => {
     expect(r.unsupported!.nearest).toBeDefined();
   });
 
-  it("refuses 1RM prediction", () => {
+  it("refuses 1RM prediction (with wording that itself passes the safety checker)", () => {
     const r = routeQuestion("What's her 1RM on back squat?");
     expect(r.kind).toBe("unsupported");
-    expect(r.unsupported!.reason).toContain("1RM");
+    expect(r.unsupported!.reason).toContain("single-repetition maximum");
+    expect(r.unsupported!.reason).not.toMatch(/\b1\s?rm\b/i);
   });
 
   it("refuses prescription asks", () => {

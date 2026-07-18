@@ -401,7 +401,7 @@ export async function scriptedFreeform(executor: ToolExecutor, routed: RoutedInt
       if (p.status === "insufficient") {
         const anchor = res.evidence[0] ?? (await qualityAnchor(run));
         const claim = buildClaim({
-          text: `The latest ${exercise} session (${d.latest.date}) has ${p.distinctLoads} distinct load(s) — at least 2 are required for a load–velocity profile. The ${p.validReps} valid rep(s) are still real observations.`,
+          text: `The latest ${exercise} session (${d.latest.date}) has ${p.distinctLoads} distinct load(s) — a load–velocity profile needs at least two distinct loads. The ${p.validReps} valid rep(s) are still real observations.`,
           claimType: "data_gap",
           comparisonWindow: d.latest.date,
           evidenceRefs: [anchor],

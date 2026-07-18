@@ -74,12 +74,12 @@ const PROHIBITED_PATTERNS: { re: RegExp; reason: string; nearest: string }[] = [
   },
   {
     re: /\b(1\s?rm|one[- ]rep max|max(imum)? lift|how much (weight |load )?(should|can))\b/i,
-    reason: "No 1RM estimate or load prescription exists in this system — the load-velocity profile deliberately does not extrapolate beyond observed loads.",
+    reason: "Estimating a single-repetition maximum or extrapolating loads beyond what was actually lifted is deliberately not supported — the load-velocity profile stays inside the observed loads.",
     nearest: "Is the load-velocity profile changing?",
   },
   {
     re: /\b(prescri\w+|what (training|program|exercises) should|program (them|him|her))\b/i,
-    reason: "This system explains measured evidence; it does not prescribe training.",
+    reason: "This system explains measured evidence; deciding what training comes next stays with the coach.",
     nearest: "What should the coach review next?",
   },
   {
