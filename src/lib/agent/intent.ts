@@ -32,6 +32,7 @@ export type IntentKind =
   | "review_next"
   | "why_finding"
   | "recent_vs_normal"
+  | "monitoring_explanation"
   | "unsupported";
 
 /** page/session context the question is asked from (all optional) */
@@ -160,7 +161,7 @@ const PROHIBITED_PATTERNS: { re: RegExp; reason: string; nearest: string }[] = [
 ];
 
 const DOMAIN_WORDS =
-  /\b(jump|force|imtp|cmj|mrsi|rsi|asymmetr\w*|side|left|right|team|position|guard|forward|center|curve|waveform|trace|velocity|load|squat|deadlift|baseline|session|test|metric|trend|athlete|train\w*|peak|takeoff|braking|propulsive|impulse|rfd|profile|cohort|z[- ]?score|average|data|monitor\w*|finding|review|compar\w*|change|improv\w*|declin\w*|missing|reliab\w*|normali[sz]ed|body[- ]?mass|kg|newton|stronger|attempt|rolling)\b/i;
+  /\b(jump|force|imtp|cmj|mrsi|rsi|asymmetr\w*|side|left|right|team|position|guard|forward|center|curve|waveform|trace|velocity|load|squat|deadlift|baseline|session|test|metric|trend|athlete|train\w*|peak|takeoff|braking|propulsive|impulse|rfd|profile|cohort|z[- ]?score|average|data|monitor\w*|finding|review|compar\w*|change|improv\w*|declin\w*|missing|reliab\w*|normali[sz]ed|body[- ]?mass|kg|newton|stronger|attempt|rolling|alert\w*|unacknowledged|surfaced|signal)\b/i;
 
 /** metricKey ← synonym patterns (checked in order; first match wins) */
 const METRIC_SYNONYMS: { re: RegExp; key: string }[] = [
@@ -327,6 +328,18 @@ export function routeQuestion(rawText: string, ctx: QuestionContext = {}, tags: 
     const tools = ["getAsymmetryHistory"];
     if (forceWindowish || testType === "imtp") tools.push("getForceWindowSummary");
     return helper("asymmetry", {}, tools);
+  }
+
+  /* monitoring explanations — the agent EXPLAINS stored monitoring outputs */
+  if (
+    /\bsurfaced\b|\breview items?\b|\balert\w*\b|\bunacknowledged\b|\bbaseline progress\b|\bmonitoring (status|state|signal)\b|\bexpected range\b|\bnoise (threshold|gate)\b|\bwhy (was|is) (there )?no alert\b|\bwhy is this metric unavailable\b/.test(t)
+  ) {
+    const teamWide = /\bwhich athletes\b|\bwho (has|have)\b|\bacross the team\b|\bteam'?s? alerts\b/.test(t);
+    return helper(
+      "monitoring_explanation",
+      {},
+      teamWide ? ["getTeamAlertSummary"] : ["getMonitoringStatus", "getAlerts"]
+    );
   }
 
   /* "why is X being monitored" → finding explanation */

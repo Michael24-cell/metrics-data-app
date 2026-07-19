@@ -504,6 +504,140 @@ export async function scriptedFreeform(executor: ToolExecutor, routed: RoutedInt
       };
     }
 
+    /* ---------------- monitoring explanation ---------------- */
+    case "monitoring_explanation": {
+      /* team-wide alert questions use the team-scoped tool */
+      if (routed.requiredTools.includes("getTeamAlertSummary")) {
+        const res = await run("getTeamAlertSummary");
+        if (res.insufficient || !res.data) {
+          return insufficientResult(run, routed, "No team alert summary is available.", `Reason: ${res.insufficient ?? "no team on record"}.`, ["What is this athlete's monitoring status?"]);
+        }
+        const d = res.data as { team: string; openCount: number; byType: Record<string, string[]> };
+        const claim = buildClaim({
+          text: `${d.team} has ${d.openCount} open alert(s). ${Object.entries(d.byType).map(([t2, names]) => `${t2.replace(/_/g, " ")}: ${names.join(", ")}`).join("; ") || "None."}`,
+          claimType: "context",
+          comparisonWindow: "open-alerts",
+          evidenceRefs: res.evidence,
+          confidence: "high",
+        });
+        return {
+          summary: `${claim.text} ${DEFER}`,
+          claims: [claim],
+          directAnswer: d.openCount === 0 ? `No open alerts for ${d.team}.` : `${d.openCount} open alert(s) for ${d.team}${d.byType["review_suggested"] ? ` — review items: ${d.byType["review_suggested"].join(", ")}` : ""}.`,
+          keyValues: [{ label: "Open alerts", value: String(d.openCount) }],
+          comparisonBasis: `Open (unacknowledged) alerts across the ${d.team} roster; same records as the alert center.`,
+          limitations: [],
+          suggestedNext: ["Open the Monitoring page to acknowledge or resolve alerts."],
+          followUps: ["Why was this athlete surfaced?", "What is this athlete's monitoring status?"],
+          contextUsed: { cohort: "team" },
+        };
+      }
+
+      const status = await run("getMonitoringStatus");
+      if (status.insufficient || !status.data) {
+        return insufficientResult(run, routed, "Monitoring is not configured for this athlete.", `Reason: ${status.insufficient ?? "no monitored metrics"}.`, ["What changed since the previous comparable session?"]);
+      }
+      const d = status.data as {
+        policy: { baselineSessions: number; rollingWindow: number; noiseGate: string; layers: string[]; fingerprint: string };
+        metrics: {
+          metricKey: string; label: string; unit: string; state: string;
+          latest: { date: string; value: number; referenceMean: number | null; bandLow: number | null; bandHigh: number | null; diff: number | null; referenceCount: number; noiseState: string } | null;
+          baselineProgress: { have: number; need: number } | null;
+          reliabilityAvailability: string;
+        }[];
+      };
+      const alerts = await run("getAlerts", {});
+      const wanted = routed.metricKey ? d.metrics.filter((m) => m.metricKey === routed.metricKey) : d.metrics;
+      const focus = [...wanted].sort((a, b2) => {
+        const rank = (s: string) => (s === "repeated_low_signal" ? 0 : s === "review_suggested" ? 1 : s === "insufficient_reliable_data" ? 2 : s === "collecting_baseline" ? 3 : 4);
+        return rank(a.state) - rank(b2.state);
+      })[0];
+      if (!focus) {
+        return insufficientResult(run, routed, "The requested metric is not monitored under the effective policy.", "Ask about a monitored metric or adjust the monitoring configuration.", ["What is this athlete's monitoring status?"]);
+      }
+      const ev = status.evidence.filter((e) => (e.label ?? "").startsWith(focus.label));
+      const claims: Claim[] = [];
+      if (focus.state === "collecting_baseline" && focus.baselineProgress) {
+        claims.push(
+          buildClaim({
+            text: `${focus.label} is still collecting its monitoring baseline: session ${focus.baselineProgress.have} of ${focus.baselineProgress.need}. No automated monitoring signals are generated while the monitoring baseline is being collected.`,
+            claimType: "context",
+            metricKey: focus.metricKey,
+            comparisonWindow: "baseline",
+            evidenceRefs: ev.length ? ev : [await qualityAnchor(run)],
+            confidence: "high",
+          })
+        );
+      } else if (focus.latest) {
+        const L = focus.latest;
+        const diff = L.diff; // tool-provided, identical to the evidence value
+        claims.push(
+          buildClaim({
+            text: `${focus.label} on ${L.date}: ${L.value} ${focus.unit} vs an expected range of ${L.bandLow}–${L.bandHigh} ${focus.unit} (previous ${L.referenceCount} sessions${diff != null ? `; difference ${diff > 0 ? "+" : ""}${diff} ${focus.unit}` : ""}). Monitoring state: ${focus.state.replace(/_/g, " ")}.`,
+            claimType: "context",
+            metricKey: focus.metricKey,
+            comparisonWindow: "monitoring-latest",
+            evidenceRefs: ev,
+            confidence: "high",
+          })
+        );
+      }
+      const alertData = (alerts.data ?? { alerts: [] }) as { alerts: { id: string; type: string; status: string; metricKey: string | null }[] };
+      const openForMetric = alertData.alerts.filter((a2) => a2.status === "new" && (!a2.metricKey || a2.metricKey === focus.metricKey));
+      if (openForMetric.length > 0) {
+        const alertEv = alerts.evidence.filter((e) => openForMetric.some((a2) => e.id === `alert:${a2.id}`));
+        // derived count ref (quality-shaped id resolves generically) so the
+        // count in the claim text stays evidence-grounded
+        const countRef: EvidenceRef = {
+          id: `series:alerts:open:count`,
+          type: "metric_series",
+          label: `${openForMetric.length} open alert(s)`,
+          values: [openForMetric.length],
+        };
+        claims.push(
+          buildClaim({
+            text: `${openForMetric.length} open alert(s) reference this athlete${routed.metricKey ? " and metric" : ""}: ${[...new Set(openForMetric.map((a2) => a2.type.replace(/_/g, " ")))].join(", ")}.`,
+            claimType: "context",
+            comparisonWindow: "open-alerts",
+            evidenceRefs: [countRef, ...(alertEv.length ? alertEv : ev)].slice(0, 8),
+            confidence: "high",
+          })
+        );
+      }
+      const gateNote =
+        d.policy.noiseGate === "none"
+          ? "No measurement-noise gate is configured — range position is reported without claiming the change exceeds measurement noise."
+          : `Noise gate: ${d.policy.noiseGate.toUpperCase()} (latest noise status: ${focus.latest?.noiseState.replace(/_/g, " ") ?? "—"}).`;
+      const limitations = [gateNote];
+      if (focus.reliabilityAvailability !== "eligible") {
+        limitations.push(`Reliability availability for this metric: ${focus.reliabilityAvailability.replace(/_/g, " ")} — signals may be withheld by policy.`);
+      }
+      return {
+        summary: `${claims[0]?.text ?? "Monitoring status reported."} ${DEFER}`,
+        claims: claims.length ? claims : [buildClaim({ text: "No monitoring results exist for the requested scope.", claimType: "data_gap", evidenceRefs: [await qualityAnchor(run)], confidence: "high" })],
+        directAnswer:
+          focus.state === "collecting_baseline" && focus.baselineProgress
+            ? `${focus.label} baseline progress: ${focus.baselineProgress.have} of ${focus.baselineProgress.need} eligible sessions.`
+            : focus.latest
+              ? `${focus.label} is ${focus.state.replace(/_/g, " ")} — ${focus.latest.value} ${focus.unit} vs expected ${focus.latest.bandLow}–${focus.latest.bandHigh} ${focus.unit}.`
+              : `${focus.label}: no monitoring results yet.`,
+        keyValues: focus.latest
+          ? [
+              { label: "Latest", value: String(focus.latest.value), unit: focus.unit },
+              { label: `Expected (prev ${focus.latest.referenceCount})`, value: `${focus.latest.bandLow}–${focus.latest.bandHigh}`, unit: focus.unit },
+              { label: "State", value: focus.state.replace(/_/g, " ") },
+            ]
+          : focus.baselineProgress
+            ? [{ label: "Baseline", value: `${focus.baselineProgress.have}/${focus.baselineProgress.need}` }]
+            : [],
+        comparisonBasis: `Persisted monitoring engine output (policy: baseline ${d.policy.baselineSessions}, rolling ${d.policy.rollingWindow}, ${d.policy.layers.join(" → ") || "product default"}). The agent explains these results; it never recreates them.`,
+        limitations,
+        suggestedNext: ["Open the athlete's monitoring view for the full history.", "Review open alerts in the alert center."],
+        followUps: ["Which athletes have new review items?", "Why was this athlete surfaced?", "What changed since the last session?"],
+        contextUsed: { metricKey: focus.metricKey, testType: METRICS[focus.metricKey]?.testType },
+      };
+    }
+
     /* ---------------- missing data ---------------- */
     case "missing_data": {
       const res = await run("getDataCompleteness");

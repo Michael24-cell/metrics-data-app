@@ -926,6 +926,137 @@ export function createToolExecutor(ctx: ToolContext): ToolExecutor {
     }
   );
 
+  /* ---------------- monitoring integration tools (consume validated outputs ONLY) ---------------- */
+
+  /* 20 — getMonitoringStatus */
+  add(
+    "getMonitoringStatus",
+    "The athlete's persisted monitoring state per monitored metric: baseline progress or the latest policy-versioned classification (range position, noise-gate status, expected range, reference window), plus the effective policy summary and reliability availability. The agent NEVER recreates monitoring logic — this is the stored engine output.",
+    { metricKey: z.string().max(60).optional() },
+    { metricKey: { type: "string" } },
+    [],
+    async () => {
+      const { effectivePolicy } = await import("../services/monitoringPolicy");
+      const { listMonitoringResults } = await import("../services/monitoringEngine");
+      const { reliabilityForMetric } = await import("../services/reliability");
+      const eff = effectivePolicy(ctx.facilityId, ctx.athleteId);
+      const metrics = eff.policy.metricKeys.filter((k) => METRICS[k]);
+      if (metrics.length === 0) {
+        return { ok: true, summary: "No metrics are selected for monitoring under the effective policy.", evidence: [], data: null, insufficient: "no monitored metrics" };
+      }
+      const evidence: EvidenceRef[] = [];
+      const perMetric = metrics.map((mk) => {
+        const d = metricDef(mk);
+        const rows = listMonitoringResults(ctx.facilityId, ctx.athleteId, mk, eff.fingerprint);
+        const latest = rows.length ? rows[rows.length - 1] : null;
+        const rel = reliabilityForMetric(ctx.facilityId, ctx.athleteId, mk);
+        if (latest) {
+          const diff = latest.reference_mean != null ? round(latest.current_value - latest.reference_mean, d.precision) : null;
+          evidence.push({
+            id: `monres:${latest.id}`,
+            type: "monitoring_result",
+            label: `${d.shortLabel} ${latest.session_date}: ${latest.monitoring_state.replace(/_/g, " ")} — value ${round(latest.current_value, d.precision)}${latest.band_low != null ? `, expected ${round(latest.band_low, d.precision)}–${round(latest.band_high!, d.precision)}` : ""}${diff != null ? `, diff ${diff}` : ""} (${latest.reference_count} reference sessions)`,
+            values: [round(latest.current_value, d.precision), ...(latest.reference_mean != null ? [round(latest.reference_mean, d.precision)] : []), ...(latest.band_low != null ? [round(latest.band_low, d.precision), round(latest.band_high!, d.precision)] : []), ...(diff != null ? [diff] : []), latest.reference_count, latest.reference_count + 1, eff.policy.baselineSessions, eff.policy.rollingWindow, ...(rel.te.te != null ? [round(rel.te.te, 2)] : []), ...(rel.mdc.mdc != null ? [round(rel.mdc.mdc, 2)] : [])],
+            unit: d.unit,
+            date: latest.session_date,
+          });
+        }
+        return {
+          metricKey: mk,
+          label: d.shortLabel,
+          unit: d.unit,
+          state: latest?.monitoring_state ?? "no_results",
+          latest: latest
+            ? { date: latest.session_date, value: round(latest.current_value, d.precision), referenceMean: latest.reference_mean != null ? round(latest.reference_mean, d.precision) : null, bandLow: latest.band_low != null ? round(latest.band_low, d.precision) : null, bandHigh: latest.band_high != null ? round(latest.band_high!, d.precision) : null, diff: latest.reference_mean != null ? round(latest.current_value - latest.reference_mean, d.precision) : null, referenceCount: latest.reference_count, noiseState: latest.noise_state }
+            : null,
+          baselineProgress: latest?.monitoring_state === "collecting_baseline" ? { have: latest.reference_count + 1, need: eff.policy.baselineSessions } : null,
+          reliabilityAvailability: rel.availability,
+          sessionsRecorded: rows.length,
+        };
+      });
+      return {
+        ok: true,
+        summary: `Monitoring (${eff.fingerprint}): ${perMetric.map((m) => `${m.label}: ${m.state.replace(/_/g, " ")}`).join("; ")}. Policy: baseline ${eff.policy.baselineSessions}, rolling ${eff.policy.rollingWindow}, noise gate ${eff.policy.noiseGate === "none" ? "none configured (range statements only)" : eff.policy.noiseGate.toUpperCase()}.`,
+        evidence,
+        data: {
+          policy: { baselineSessions: eff.policy.baselineSessions, rollingWindow: eff.policy.rollingWindow, noiseGate: eff.policy.noiseGate, consecutiveLowCount: eff.policy.consecutiveLowCount, layers: eff.layers.map((l) => `${l.scope} v${l.version}`), fingerprint: eff.fingerprint },
+          metrics: perMetric,
+        },
+      };
+    }
+  );
+
+  /* 21 — getAlerts */
+  add(
+    "getAlerts",
+    "The scoped athlete's persistent alerts (measured-performance events only) with lifecycle status, evidence, and the policy version each was generated under.",
+    { status: z.enum(["new", "acknowledged", "resolved", "dismissed"]).optional() },
+    { status: { type: "string", enum: ["new", "acknowledged", "resolved", "dismissed"] } },
+    [],
+    async (input) => {
+      const { listAlerts } = await import("../services/alerts");
+      const rows = listAlerts(ctx.facilityId, { athleteId: ctx.athleteId, status: input.status as never });
+      if (rows.length === 0) {
+        return { ok: true, summary: `No ${input.status ?? ""} alerts for this athlete.`.replace("  ", " "), evidence: [], data: { alerts: [] }, insufficient: "no alerts" };
+      }
+      const evidence: EvidenceRef[] = rows.slice(0, 10).map((a) => {
+        const ev = JSON.parse(a.evidence_json) as Record<string, unknown>;
+        const nums = Object.values(ev).filter((v): v is number => typeof v === "number").map((v) => round(v, 2));
+        return {
+          id: `alert:${a.id}`,
+          type: "alert",
+          label: `[${a.status}] ${a.alert_type.replace(/_/g, " ")} · ${a.metric_key ?? ""} · ${a.session_date ?? a.created_at.slice(0, 10)}`,
+          values: nums.slice(0, 12),
+          date: a.session_date ?? undefined,
+        };
+      });
+      return {
+        ok: true,
+        summary: `${rows.length} alert(s)${input.status ? ` with status '${input.status}'` : ""}: ${rows.slice(0, 3).map((a) => a.alert_type.replace(/_/g, " ")).join("; ")}.`,
+        evidence,
+        data: {
+          alerts: rows.slice(0, 10).map((a) => ({ id: a.id, type: a.alert_type, status: a.status, severity: a.severity, metricKey: a.metric_key, sessionDate: a.session_date, evidence: JSON.parse(a.evidence_json), policyFingerprint: a.policy_fingerprint })),
+        },
+      };
+    }
+  );
+
+  /* 22 — getTeamAlertSummary */
+  add(
+    "getTeamAlertSummary",
+    "Open-alert summary for the scoped athlete's TEAM (roster-equivalent, facility-scoped): counts by type and the athletes with new review items or repeated low signals. Use for team-wide questions like 'which athletes have new review items?'.",
+    {}, {}, [],
+    async () => {
+      const { listAlerts } = await import("../services/alerts");
+      const a = getAthlete(ctx.facilityId, ctx.athleteId);
+      if (!a?.team) return { ok: true, summary: "Athlete has no team on record.", evidence: [], data: null, insufficient: "no team" };
+      const db = getDb();
+      const teamAthletes = db.prepare(`SELECT id, display_name FROM athlete WHERE facility_id = ? AND team = ?`).all(ctx.facilityId, a.team) as { id: string; display_name: string }[];
+      const nameOf = new Map(teamAthletes.map((t) => [t.id, t.display_name]));
+      const open = listAlerts(ctx.facilityId, { status: "new" }).filter((al) => nameOf.has(al.athlete_id));
+      const byType = new Map<string, string[]>();
+      for (const al of open) {
+        const arr = byType.get(al.alert_type) ?? [];
+        arr.push(nameOf.get(al.athlete_id)!);
+        byType.set(al.alert_type, arr);
+      }
+      const evidence: EvidenceRef[] = [
+        {
+          id: `cohort:team:${a.team}:alerts`,
+          type: "cohort",
+          label: `${a.team}: ${open.length} open alert(s) across ${new Set(open.map((o) => o.athlete_id)).size} athlete(s)`,
+          values: [open.length, new Set(open.map((o) => o.athlete_id)).size, teamAthletes.length],
+        },
+      ];
+      return {
+        ok: true,
+        summary: `${a.team}: ${open.length} open alert(s). ${[...byType.entries()].map(([t, names]) => `${t.replace(/_/g, " ")}: ${[...new Set(names)].join(", ")}`).join("; ") || "none"}.`,
+        evidence,
+        data: { team: a.team, openCount: open.length, byType: Object.fromEntries([...byType.entries()].map(([t, names]) => [t, [...new Set(names)]])) },
+      };
+    }
+  );
+
   return {
     ctx,
     definitions: () => Object.values(tools).map((t) => t.def),

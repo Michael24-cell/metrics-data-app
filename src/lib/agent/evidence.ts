@@ -168,6 +168,34 @@ export function resolveEvidence(
         record: row,
       };
     }
+    case "monitoring_result": {
+      const rowId = id.replace(/^monres:/, "");
+      const row = db
+        .prepare(`SELECT * FROM monitoring_result WHERE facility_id = ? AND athlete_id = ? AND id = ?`)
+        .get(facilityId, athleteId, rowId) as Record<string, unknown> | undefined;
+      if (!row) return fail(type, id, "Monitoring result not found for this athlete in this facility.");
+      return {
+        ok: true, type, id,
+        title: `Monitoring · ${row.metric_key} · ${row.session_date} — ${String(row.monitoring_state).replace(/_/g, " ")}`,
+        detail: `Value ${row.current_value}; expected range ${row.band_low ?? "—"}–${row.band_high ?? "—"} (previous ${row.reference_count} sessions). Policy ${row.policy_fingerprint}, calc v${row.calc_version}.`,
+        link: `/athletes/${athleteId}/monitoring`,
+        record: row,
+      };
+    }
+    case "alert": {
+      const rowId = id.replace(/^alert:/, "");
+      const row = db
+        .prepare(`SELECT * FROM alert WHERE facility_id = ? AND athlete_id = ? AND id = ?`)
+        .get(facilityId, athleteId, rowId) as Record<string, unknown> | undefined;
+      if (!row) return fail(type, id, "Alert not found for this athlete in this facility.");
+      return {
+        ok: true, type, id,
+        title: `Alert · ${String(row.alert_type).replace(/_/g, " ")} · ${row.session_date ?? String(row.created_at).slice(0, 10)}`,
+        detail: `Status ${row.status}; severity ${row.severity}. Policy ${row.policy_fingerprint ?? "—"}.`,
+        link: `/monitoring`,
+        record: row,
+      };
+    }
     case "cohort": {
       // cohort:<team|position>:<name>:<metricKey>
       if (!/^cohort:(team|position):/.test(id)) return fail(type, id, "Malformed cohort-evidence id.");

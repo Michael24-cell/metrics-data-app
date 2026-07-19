@@ -134,9 +134,10 @@ export function evaluateOutput(
         : "No longitudinal comparison claims made."
   );
 
-  /* 8 — reference vs recent baseline distinction */
+  /* 8 — reference vs recent baseline distinction (the MONITORING baseline is
+     a distinct, explicitly named concept and is exempt) */
   const vagueBaseline = claims.filter(
-    (c) => /baseline/i.test(c.text) && !/(reference|recent|rolling|benchmark)/i.test(c.text)
+    (c) => /baseline/i.test(c.text) && !/(reference|recent|rolling|benchmark|monitoring baseline)/i.test(c.text)
   );
   push(
     "baseline_distinction",

@@ -34,6 +34,8 @@ export const EvidenceTypeSchema = z.enum([
   "cohort", // team/position cohort statistics (population SD contract)
   "curve", // a prepared force-time curve or deterministic curve comparison
   "lv_profile", // a live load-velocity profile rebuilt from stored reps
+  "monitoring_result", // a persisted, policy-versioned monitoring classification
+  "alert", // a persistent alert row (lifecycle + policy fingerprint)
 ]);
 export type EvidenceType = z.infer<typeof EvidenceTypeSchema>;
 
