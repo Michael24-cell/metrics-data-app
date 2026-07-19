@@ -744,6 +744,39 @@ interface HooperSpec {
   });
 }
 
+/* ---------------- organizations + demo users (security foundation) ---------------- */
+
+import { createUser, addMembership } from "../src/lib/auth/auth";
+
+{
+  const org1 = newId();
+  const org2 = newId();
+  db.prepare(`INSERT INTO organization (id, name, created_at) VALUES (?, ?, ?)`).run(org1, "Ridgeline Sports Group", now);
+  db.prepare(`INSERT INTO organization (id, name, created_at) VALUES (?, ?, ?)`).run(org2, "Harbor City Athletics", now);
+  db.prepare(`UPDATE facility SET organization_id = ? WHERE id = ?`).run(org1, RPI);
+  db.prepare(`UPDATE facility SET organization_id = ? WHERE id = ?`).run(org2, HCFC);
+
+  // Demo credentials (synthetic, documented): production deployments use the
+  // invitation/activation flow instead of pre-seeded passwords.
+  const PW = "demo-password-123";
+  const users: [string, string, string, ("admin" | "coach" | "analyst" | "readonly")[]][] = [
+    ["admin@ridgeline.demo", "Ridgeline Admin", RPI, ["admin"]],
+    ["coach@ridgeline.demo", "Ridgeline Coach", RPI, ["coach"]],
+    ["analyst@ridgeline.demo", "Ridgeline Analyst", RPI, ["analyst"]],
+    ["viewer@ridgeline.demo", "Ridgeline Viewer", RPI, ["readonly"]],
+    ["coach@harborcity.demo", "Harbor City Coach", HCFC, ["coach"]],
+  ];
+  for (const [email, name, fac, roles] of users) {
+    const u = createUser(email, name, PW);
+    for (const role of roles) addMembership(u.id, fac, role);
+  }
+  // one multi-facility user: coach at Ridgeline AND Harbor City
+  const multi = createUser("multi@tracelab.demo", "Traveling Coach", PW);
+  addMembership(multi.id, RPI, "coach");
+  addMembership(multi.id, HCFC, "coach");
+  console.log(`Demo users seeded (password: ${PW}) — admin/coach/analyst/viewer@ridgeline.demo, coach@harborcity.demo, multi@tracelab.demo`);
+}
+
 /* ---------------- summary ---------------- */
 
 const counts = (table: string) =>

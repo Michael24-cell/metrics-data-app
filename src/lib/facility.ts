@@ -1,16 +1,24 @@
-import { cookies } from "next/headers";
-import { listFacilities } from "./db/dal";
+import { redirect } from "next/navigation";
+import { AuthzError, resolveContext } from "./authz";
 
 /**
- * Resolves the active facility from the session cookie.
- * All page/API data access is scoped to this facility via the DAL.
+ * Resolves the AUTHORIZED active facility for the request.
+ *
+ * Every page and API route funnels through this (or authz.apiContext), so
+ * tenant scoping has one source of truth: in demo mode the cookie-selected
+ * facility (controlled demo, unchanged behavior); in required mode the
+ * facility is derived from the authenticated user's memberships — a browser
+ * cookie can only PICK among facilities the user belongs to, never grant one.
+ *
+ * Pages calling this while unauthenticated (required mode) redirect to
+ * /signin. API routes use authz.apiContext(), which returns 401/403 JSON.
  */
 export async function currentFacility() {
-  const jar = await cookies();
-  const facilities = listFacilities();
-  if (facilities.length === 0) {
-    throw new Error("No facilities found — run `npm run db:seed` first.");
+  try {
+    const ctx = await resolveContext();
+    return ctx.facility;
+  } catch (e) {
+    if (e instanceof AuthzError) redirect("/signin");
+    throw e;
   }
-  const id = jar.get("flid")?.value;
-  return facilities.find((f) => f.id === id) ?? facilities[0];
 }

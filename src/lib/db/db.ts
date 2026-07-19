@@ -27,6 +27,11 @@ export function getDb(): DatabaseSync {
   } catch {
     /* column already exists — expected on any db created with the current schema */
   }
+  try {
+    _db.exec(`ALTER TABLE facility ADD COLUMN organization_id TEXT`);
+  } catch {
+    /* column already exists — expected on any db created with the current schema */
+  }
   return _db;
 }
 

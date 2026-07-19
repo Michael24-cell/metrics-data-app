@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { currentFacility } from "@/lib/facility";
 import { getAthlete } from "@/lib/db/dal";
+import { getDb, nowIso } from "@/lib/db/db";
 import { runAgent } from "@/lib/agent/runner";
 import { QUESTION_KEYS } from "@/lib/agent/schemas";
+import { apiContext, isDenied, rateLimit } from "@/lib/authz";
+import { recordAudit } from "@/lib/audit";
 
 /**
  * Executes one agent run and returns the COMPLETE run snapshot (trace,
@@ -42,7 +44,12 @@ const BodySchema = z
   .strict();
 
 export async function POST(req: NextRequest) {
-  const facility = await currentFacility();
+  const ctx = await apiContext("agent.ask");
+  if (isDenied(ctx)) return ctx;
+  const facility = ctx.facility;
+  if (!rateLimit(`agent:${ctx.user?.id ?? "demo"}:${facility.id}`, 30)) {
+    return NextResponse.json({ error: "Rate limit reached — try again shortly." }, { status: 429 });
+  }
   let body: unknown;
   try {
     body = await req.json();
@@ -71,6 +78,24 @@ export async function POST(req: NextRequest) {
       context: parsed.data.context,
       findingId: parsed.data.findingId,
       asOf: parsed.data.asOf,
+    });
+    // Server-side record: tenancy-scoped persistence for audit and access
+    // control (the client keeps its localStorage copy for UX).
+    getDb()
+      .prepare(
+        `INSERT OR REPLACE INTO agent_run_record (run_id, facility_id, athlete_id, user_id, task, question, eval_status, mode, run_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(run.runId, facility.id, athlete.id, ctx.user?.id ?? null, run.task, run.question ?? run.questionKey ?? null, run.eval.status, run.mode, JSON.stringify(run), nowIso());
+    recordAudit({
+      facilityId: facility.id,
+      userId: ctx.user?.id,
+      action: "agent.question",
+      resourceType: "agent_run",
+      resourceId: run.runId,
+      outcome: run.eval.status === "fail" ? "error" : "ok",
+      versions: { prompt: run.provenance.promptVersion, tools: run.provenance.toolSchemaVersion, mode: run.mode },
+      metadata: { task: run.task, toolCalls: run.provenance.toolCallCount, evalStatus: run.eval.status },
     });
     return NextResponse.json(run);
   } catch (e) {

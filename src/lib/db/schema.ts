@@ -275,4 +275,82 @@ CREATE TABLE IF NOT EXISTS external_test_result (
   raw_json TEXT,
   created_at TEXT NOT NULL
 );
+
+/* ================= commercial security foundation (additive) ================= */
+
+CREATE TABLE IF NOT EXISTS organization (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_user (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  password_hash TEXT,                            -- null until activation completes
+  status TEXT NOT NULL DEFAULT 'invited',        -- invited | active | disabled
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS facility_membership (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES app_user(id),
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  role TEXT NOT NULL,                            -- admin | coach | analyst | readonly
+  created_at TEXT NOT NULL,
+  UNIQUE(user_id, facility_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_session (
+  id TEXT PRIMARY KEY,                           -- sha256 of the bearer token; raw token never stored
+  user_id TEXT NOT NULL REFERENCES app_user(id),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS invitation (
+  id TEXT PRIMARY KEY,                           -- sha256 of the invitation token
+  email TEXT NOT NULL,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  role TEXT NOT NULL,
+  invited_by TEXT,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  accepted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS audit_event (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT,
+  user_id TEXT,
+  action TEXT NOT NULL,                          -- e.g. auth.signin, agent.question, alert.acknowledge
+  resource_type TEXT,
+  resource_id TEXT,
+  outcome TEXT NOT NULL,                         -- ok | denied | error
+  versions_json TEXT,                            -- relevant version identifiers
+  metadata_json TEXT,                            -- SAFE metadata only: no secrets, no raw prompts
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_facility_time ON audit_event(facility_id, created_at);
+
+CREATE TABLE IF NOT EXISTS agent_run_record (
+  run_id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  user_id TEXT,
+  task TEXT NOT NULL,
+  question TEXT,
+  eval_status TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  run_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_run_facility ON agent_run_record(facility_id, athlete_id, created_at);
+
+CREATE TABLE IF NOT EXISTS idempotency_key (
+  key TEXT PRIMARY KEY,                          -- caller-scoped: facility:user:operation:hash
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 `;

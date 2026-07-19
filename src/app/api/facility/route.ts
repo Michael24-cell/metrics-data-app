@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listFacilities } from "@/lib/db/dal";
+import { authMode, membershipsOf, sessionUser, SESSION_COOKIE } from "@/lib/auth/auth";
+import { recordAudit } from "@/lib/audit";
 
 /**
  * Facility switcher: sets the scope cookie and returns to the app.
@@ -19,6 +21,22 @@ export async function GET(req: NextRequest) {
 
   if (!target) {
     return NextResponse.redirect(new URL("/", req.url));
+  }
+
+  // Production auth mode: the cookie is only a PREFERENCE — switching is
+  // allowed solely between facilities the signed-in user belongs to, and the
+  // demo interstitial is skipped (membership, not a confirm click, is the guard).
+  if (authMode() === "required") {
+    const user = sessionUser(req.cookies.get(SESSION_COOKIE)?.value);
+    if (!user) return NextResponse.redirect(new URL("/signin", req.url));
+    const member = membershipsOf(user.id).some((m) => m.facility_id === target.id);
+    recordAudit({ userId: user.id, facilityId: target.id, action: "facility.switch", outcome: member ? "ok" : "denied" });
+    if (!member) {
+      return NextResponse.json({ error: "You are not a member of that facility." }, { status: 403 });
+    }
+    const res = NextResponse.redirect(new URL("/", req.url));
+    res.cookies.set("flid", target.id, { path: "/", sameSite: "lax" });
+    return res;
   }
 
   if (!confirmed) {
