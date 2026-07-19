@@ -7,6 +7,8 @@ import { QUESTION_KEYS } from "@/lib/agent/schemas";
 import { apiContext, isDenied, rateLimit } from "@/lib/authz";
 import { recordAudit } from "@/lib/audit";
 
+const recentRuns = new Map<string, { at: number; run: unknown }>();
+
 /**
  * Executes one agent run and returns the COMPLETE run snapshot (trace,
  * output, eval, provenance). Stateless by design: persistence of runs and
@@ -32,6 +34,17 @@ const BodySchema = z
         metricKey: z.string().max(60).optional(),
         from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        source: z.enum(["contextual_launch", "page_context"]).optional(),
+      })
+      .strict()
+      .optional(),
+    /** explicit structured tags from the query builder (below free-text precedence) */
+    tags: z
+      .object({
+        testType: z.string().max(30).optional(),
+        metricKey: z.string().max(60).optional(),
+        cohort: z.enum(["team", "position"]).optional(),
+        comparison: z.enum(["team", "position", "baseline", "normal", "change"]).optional(),
       })
       .strict()
       .optional(),
@@ -67,6 +80,14 @@ export async function POST(req: NextRequest) {
   if (!athlete) {
     return NextResponse.json({ error: "Athlete not found in the current facility scope." }, { status: 404 });
   }
+  // Duplicate-submission protection: an identical body from the same caller
+  // within a short window replays the in-flight/last result instead of
+  // running the agent twice.
+  const dupeKey = `${facility.id}:${ctx.user?.id ?? "demo"}:${JSON.stringify(parsed.data)}`;
+  const dupe = recentRuns.get(dupeKey);
+  if (dupe && Date.now() - dupe.at < 8000) {
+    return NextResponse.json(dupe.run);
+  }
   try {
     const run = await runAgent({
       facilityId: facility.id,
@@ -76,6 +97,9 @@ export async function POST(req: NextRequest) {
       questionKey: parsed.data.questionKey,
       question: parsed.data.question,
       context: parsed.data.context,
+      tags: parsed.data.tags,
+      userId: ctx.user?.id ?? null,
+      userRole: ctx.role,
       findingId: parsed.data.findingId,
       asOf: parsed.data.asOf,
     });
@@ -97,6 +121,10 @@ export async function POST(req: NextRequest) {
       versions: { prompt: run.provenance.promptVersion, tools: run.provenance.toolSchemaVersion, mode: run.mode },
       metadata: { task: run.task, toolCalls: run.provenance.toolCallCount, evalStatus: run.eval.status },
     });
+    recentRuns.set(dupeKey, { at: Date.now(), run });
+    if (recentRuns.size > 200) {
+      for (const [k, v] of recentRuns) if (Date.now() - v.at > 8000) recentRuns.delete(k);
+    }
     return NextResponse.json(run);
   } catch (e) {
     return NextResponse.json(

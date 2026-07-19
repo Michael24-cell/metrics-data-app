@@ -15,7 +15,8 @@
 
 import { METRICS, TEST_TYPES, IMTP_FORCE_POINT_KEYS } from "../config/metrics";
 
-export const INTENT_ROUTER_VERSION = "1.0.0";
+export const INTENT_ROUTER_VERSION = "2.1.0";
+export const QUERY_SPEC_VERSION = "1.0.0";
 
 export type IntentKind =
   | "current_status"
@@ -30,6 +31,7 @@ export type IntentKind =
   | "missing_data"
   | "review_next"
   | "why_finding"
+  | "recent_vs_normal"
   | "unsupported";
 
 /** page/session context the question is asked from (all optional) */
@@ -39,6 +41,45 @@ export interface QuestionContext {
   from?: string;
   to?: string;
   cohort?: "team" | "position";
+  /** where this context came from — drives provenance on resolved fields */
+  source?: "contextual_launch" | "page_context";
+}
+
+/** explicit structured tags from the query builder — precedence below current free text */
+export interface QueryTags {
+  testType?: string;
+  metricKey?: string;
+  cohort?: "team" | "position";
+  comparison?: "team" | "position" | "baseline" | "normal" | "change";
+}
+
+/* ---------------- QuerySpecV1: field-level value/confidence/provenance ---------------- */
+
+export type FieldProvenance =
+  | "explicit_tag"
+  | "explicit_free_text"
+  | "contextual_launch"
+  | "page_context"
+  | "phrase_match"
+  | "semantic_parse"
+  | "safe_default";
+
+export interface ResolvedField<T> {
+  value: T;
+  /** field-level confidence, not one global score */
+  confidence: "high" | "medium" | "low";
+  provenance: FieldProvenance;
+}
+
+export interface QuerySpecV1 {
+  version: string; // QUERY_SPEC_VERSION
+  routerVersion: string;
+  intent: ResolvedField<IntentKind>;
+  testType?: ResolvedField<string>;
+  metricKey?: ResolvedField<string>;
+  cohort?: ResolvedField<"team" | "position">;
+  /** sources that materially disagreed (text vs tags) — shown, not hidden */
+  conflicts: string[];
 }
 
 export interface ClarificationOption {
@@ -60,6 +101,30 @@ export interface RoutedIntent {
   requiredTools: string[];
   clarification?: { question: string; options: ClarificationOption[] };
   unsupported?: { reason: string; missing?: string; nearest?: string };
+  /** provenance of the resolved fields (feeds QuerySpecV1) */
+  metricProv?: FieldProvenance;
+  testProv?: FieldProvenance;
+  /** materially disagreeing sources, e.g. text metric vs tag metric */
+  conflicts?: string[];
+  /** recent-vs-normal reference window (latest value always excluded) */
+  rvnWindow?: number;
+}
+
+/** Project a routed intent into the versioned query contract. */
+export function buildQuerySpec(routed: RoutedIntent): QuerySpecV1 {
+  const conf = (p: FieldProvenance | undefined): "high" | "medium" | "low" =>
+    p === "explicit_free_text" || p === "explicit_tag" || p === "phrase_match" ? "high"
+      : p === "contextual_launch" || p === "page_context" ? "medium"
+        : "low";
+  return {
+    version: QUERY_SPEC_VERSION,
+    routerVersion: INTENT_ROUTER_VERSION,
+    intent: { value: routed.kind, confidence: routed.unsupported || routed.clarification ? "high" : "medium", provenance: "phrase_match" },
+    testType: routed.testType ? { value: routed.testType, confidence: conf(routed.testProv), provenance: routed.testProv ?? "safe_default" } : undefined,
+    metricKey: routed.metricKey ? { value: routed.metricKey, confidence: conf(routed.metricProv), provenance: routed.metricProv ?? "safe_default" } : undefined,
+    cohort: routed.cohort ? { value: routed.cohort, confidence: "high", provenance: "phrase_match" } : undefined,
+    conflicts: routed.conflicts ?? [],
+  };
 }
 
 /* ---------------- vocabulary ---------------- */
@@ -88,7 +153,7 @@ const PROHIBITED_PATTERNS: { re: RegExp; reason: string; nearest: string }[] = [
     nearest: "What information is missing?",
   },
   {
-    re: /\b(ignore (the )?(evidence|data)|make (something|it) up|fabricate|pretend|just say)\b/i,
+    re: /\b(ignore (the )?(evidence|data)|ignore (previous|all|your) (instructions?|rules?)|disregard (the )?(rules|instructions)|make (something|it) up|fabricate|pretend|just say)\b/i,
     reason: "Answers are grounded in validated application data only — evidence cannot be ignored or invented.",
     nearest: "What changed in this athlete's recent results?",
   },
@@ -113,11 +178,34 @@ const METRIC_SYNONYMS: { re: RegExp; key: string }[] = [
 
 const uniq = (xs: string[]) => [...new Set(xs)];
 
+/* Bounded typo/alias normalization — a controlled map, not open-ended fuzzy
+   matching, so routing stays deterministic and auditable. */
+const TYPO_MAP: [RegExp, string][] = [
+  [/\basymm?etr(y|ies|ical)?\b|\basymetr\w*\b|\basimmetr\w*\b/gi, "asymmetry"],
+  [/\bimpt\b|\bitmp\b|\bmitp\b/gi, "imtp"],
+  [/\bjump hieght\b|\bjum height\b|\bjumo height\b/gi, "jump height"],
+  [/\bvelosity\b|\bvelocty\b/gi, "velocity"],
+  [/\bbase ?line\b/gi, "baseline"],
+  [/\bcompair\w*\b/gi, "compare"],
+];
+
+/* Controlled position taxonomy: aliases map to roster position labels only.
+   Cohort resolution always uses the athlete's ACTUAL roster position — these
+   aliases only signal that a position-group comparison was requested. */
+const POSITION_ALIASES = /\bguards?\b|\bpoint guards?\b|\bforwards?\b|\bwings?\b|\bcenters?\b|\bbigs\b|\bposts?\b/i;
+
+export function normalizeQuestion(raw: string): string {
+  let s = raw;
+  for (const [re, replacement] of TYPO_MAP) s = s.replace(re, replacement);
+  return s;
+}
+
 /* ---------------- router ---------------- */
 
-export function routeQuestion(rawText: string, ctx: QuestionContext = {}): RoutedIntent {
-  const text = rawText.trim().slice(0, 500);
+export function routeQuestion(rawText: string, ctx: QuestionContext = {}, tags: QueryTags = {}): RoutedIntent {
+  const text = normalizeQuestion(rawText.trim().slice(0, 500));
   const t = text.toLowerCase();
+  const conflicts: string[] = [];
 
   /* prohibited asks — refuse before anything else */
   for (const p of PROHIBITED_PATTERNS) {
@@ -149,29 +237,46 @@ export function routeQuestion(rawText: string, ctx: QuestionContext = {}): Route
   const pointMs = msMatch ? Number(msMatch[1]) : undefined;
   const forceWindowish = /\bforce (0|zero)\s?[-–to]+\s?300\b|\bearly force\b/.test(t) || (pointMs != null && /\bforce\b/.test(t));
 
-  /* metric */
+  /* metric — precedence: explicit current wording > explicit tag > context > default */
   let metricKey: string | undefined;
-  if (forceWindowish && pointMs != null) metricKey = IMTP_FORCE_POINT_KEYS[pointMs];
-  if (!metricKey) metricKey = METRIC_SYNONYMS.find((s) => s.re.test(t))?.key;
-  if (!metricKey && /\b(that|it|this metric)\b/.test(t)) metricKey = ctx.metricKey; // follow-up
+  let metricProv: FieldProvenance | undefined;
+  if (forceWindowish && pointMs != null) { metricKey = IMTP_FORCE_POINT_KEYS[pointMs]; metricProv = "explicit_free_text"; }
+  if (!metricKey) {
+    const m = METRIC_SYNONYMS.find((s) => s.re.test(t))?.key;
+    if (m) { metricKey = m; metricProv = "explicit_free_text"; }
+  }
+  if (metricKey && tags.metricKey && tags.metricKey !== metricKey) {
+    conflicts.push(`Question names ${METRICS[metricKey]?.shortLabel ?? metricKey}; the ${METRICS[tags.metricKey]?.shortLabel ?? tags.metricKey} tag was set — the question's wording wins.`);
+  }
+  if (!metricKey && tags.metricKey && METRICS[tags.metricKey]) { metricKey = tags.metricKey; metricProv = "explicit_tag"; }
+  if (!metricKey && /\b(that|it|this metric)\b/.test(t) && ctx.metricKey) {
+    metricKey = ctx.metricKey; metricProv = ctx.source === "contextual_launch" ? "contextual_launch" : "page_context";
+  }
   if (!metricKey && ctx.metricKey && !/\bteam|position|guard|forward|center|curve|velocity profile\b/.test(t)) {
     // inherit the page metric for metric-shaped questions with no explicit metric
-    if (/\bnormali[sz]ed|trend|chang|improv|declin|baseline|asymmetr|stronger\b/.test(t)) metricKey = ctx.metricKey;
+    if (/\bnormali[sz]ed|trend|chang|improv|declin|baseline|asymmetr|stronger|normal|usual|typical\b/.test(t)) {
+      metricKey = ctx.metricKey; metricProv = ctx.source === "contextual_launch" ? "contextual_launch" : "page_context";
+    }
   }
 
   /* normalized form requested? */
   const normalized = /\bnormali[sz]ed|per (kilo|kg)|body[- ]?mass\b|\bn\/kg\b/.test(t);
   if (normalized && metricKey && METRICS[metricKey]?.normalizedKey) metricKey = METRICS[metricKey].normalizedKey;
 
-  /* test type */
+  /* test type — same precedence */
   let testType: string | undefined;
-  if (/\bimtp\b|mid[- ]thigh/.test(t)) testType = "imtp";
-  else if (/\bcmj\b|countermovement/.test(t)) testType = "cmj";
-  else if (/\bdrop[- ]jump\b/.test(t)) testType = "drop_jump";
-  else if (/\b(vbt|barbell|squat|deadlift|load[- ]velocity|velocity profile)\b/.test(t)) testType = "vbt";
-  if (!testType && metricKey) testType = METRICS[metricKey]?.testType;
-  if (!testType && forceWindowish) testType = "imtp";
-  if (!testType) testType = ctx.testType;
+  let testProv: FieldProvenance | undefined;
+  if (/\bimtp\b|mid[- ]thigh/.test(t)) { testType = "imtp"; testProv = "explicit_free_text"; }
+  else if (/\bcmj\b|countermovement/.test(t)) { testType = "cmj"; testProv = "explicit_free_text"; }
+  else if (/\bdrop[- ]jump\b/.test(t)) { testType = "drop_jump"; testProv = "explicit_free_text"; }
+  else if (/\b(vbt|barbell|squat|deadlift|load[- ]velocity|velocity profile)\b/.test(t)) { testType = "vbt"; testProv = "explicit_free_text"; }
+  if (testType && tags.testType && tags.testType !== testType) {
+    conflicts.push(`Question names the ${testType.toUpperCase()} test; the ${tags.testType.toUpperCase()} tag was set — the question's wording wins.`);
+  }
+  if (!testType && tags.testType && TEST_TYPES[tags.testType]) { testType = tags.testType; testProv = "explicit_tag"; }
+  if (!testType && metricKey) { testType = METRICS[metricKey]?.testType; testProv = metricProv; }
+  if (!testType && forceWindowish) { testType = "imtp"; testProv = "explicit_free_text"; }
+  if (!testType && ctx.testType) { testType = ctx.testType; testProv = ctx.source === "contextual_launch" ? "contextual_launch" : "page_context"; }
 
   const helper = (kind: IntentKind, extra: Partial<RoutedIntent>, tools: string[]): RoutedIntent => ({
     kind,
@@ -180,6 +285,9 @@ export function routeQuestion(rawText: string, ctx: QuestionContext = {}): Route
     pointMs,
     normalized: normalized || undefined,
     requiredTools: uniq(tools),
+    metricProv,
+    testProv,
+    conflicts: conflicts.length ? conflicts : undefined,
     ...extra,
   });
 
@@ -227,7 +335,7 @@ export function routeQuestion(rawText: string, ctx: QuestionContext = {}): Route
   }
 
   /* team / position comparison */
-  const positionish = /\bposition\b|\bguards?\b|\bforwards?\b|\bcenters?\b|\bother (players|athletes) (at|in) (the|their)\b/.test(t);
+  const positionish = /\bposition\b|\bother (players|athletes) (at|in) (the|their)\b/.test(t) || POSITION_ALIASES.test(t);
   const teamish = /\bteam\b|\bsquad\b|\broster\b|\bteammates\b/.test(t) || /\bcompare\w*\b.*\bwith (the )?(rest|others)\b/.test(t);
   if (positionish || teamish) {
     const cohort: "team" | "position" = positionish && !/\bwhole team|team average|team mean\b/.test(t) && positionish !== teamish ? (positionish ? "position" : "team") : positionish ? "position" : "team";
@@ -272,12 +380,41 @@ export function routeQuestion(rawText: string, ctx: QuestionContext = {}): Route
     return helper("baseline_comparison", {}, ["getBaselineComparison"]);
   }
 
+  /* recent vs normal — "is the latest result normal / unusual / like her usual?" */
+  if (
+    /\bnormal\b|\busual\b|\btypical\b|\bunusual\b|\bout of (line|character)\b|\bhow far is (today|the latest)\b|\blast (five|5|seven|7|ten|10)\b/.test(t) &&
+    !/\bnoise|meaningful|worthwhile\b/.test(t)
+  ) {
+    const win = t.match(/last (five|5|seven|7|ten|10)/);
+    const rvnWindow = win ? (win[1] === "five" ? 5 : win[1] === "seven" ? 7 : win[1] === "ten" ? 10 : Number(win[1])) : 5;
+    return helper("recent_vs_normal", { rvnWindow }, ["getMetricSeries"]);
+  }
+
   /* change over time */
   if (/\bwhat changed|chang(e|ed|ing)|trend|improv\w*|declin\w*|over time|since\b/.test(t)) {
     const tools = metricKey ? ["getMetricSeries"] : ["getTestSummary", "getMetricSeries"];
     return helper("change_over_time", {}, tools);
   }
 
-  /* default: current status of a test/metric */
-  return helper("current_status", {}, ["getTestSummary", "getDataCompleteness"]);
+  /* explicit status asks only — no silent fallback for weakly understood questions */
+  if (/\bstatus\b|\bsummar(y|ize|ise)\b|\bhow (is|are|does) .*(look|doing)\b|\boverview\b|\bcurrent numbers\b/.test(t)) {
+    return helper("current_status", {}, ["getTestSummary", "getDataCompleteness"]);
+  }
+
+  /* weakly understood: ask, don't guess */
+  return helper(
+    "current_status",
+    {
+      clarification: {
+        question: "I didn't confidently match that question to a supported analysis. Which of these is closest?",
+        options: [
+          { label: "Is the latest result normal for them?", question: "Is the latest result normal for this athlete?" },
+          { label: "What changed over time?", question: "What changed in this athlete's recent results?" },
+          { label: "Compare with the team", question: "How does this athlete compare with the team?" },
+          { label: "Current status", question: "Summarize this athlete's current status." },
+        ],
+      },
+    },
+    []
+  );
 }

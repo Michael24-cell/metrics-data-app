@@ -11,6 +11,7 @@ import { RoutedIntent } from "./intent";
 import { AnswerContext, Claim, EvidenceRef, KeyValue } from "./schemas";
 import { ToolExecutor, ToolOutcome } from "./tools";
 import { METRICS, TEST_TYPES, ASYMMETRY_SOURCE_METRICS, BASELINE_MONITORED_METRICS } from "../config/metrics";
+import { recentVsNormal } from "../calc/recentVsNormal";
 
 export interface FreeformResult {
   summary: string;
@@ -444,6 +445,62 @@ export async function scriptedFreeform(executor: ToolExecutor, routed: RoutedInt
         suggestedNext: ["Open the load–velocity panel for the observed points and fitted line."],
         followUps: ["What data is missing before this comparison is reliable?"],
         contextUsed: { testType: "vbt", window: d.latest.date },
+      };
+    }
+
+    /* ---------------- recent vs normal ---------------- */
+    case "recent_vs_normal": {
+      const metricKey =
+        routed.metricKey ?? (routed.testType ? TEST_TYPES[routed.testType]?.defaultMetric : undefined) ?? "cmj_jump_height";
+      const def = METRICS[metricKey];
+      const window = routed.rvnWindow ?? 5;
+      const res = await run("getMetricSeries", { metricType: metricKey, lastN: Math.min(window + 1, 60) });
+      const d = res.data as { points?: { date: string; value: number }[] } | null;
+      const rvn = recentVsNormal(d?.points ?? [], window);
+      if (!rvn.latest || rvn.referenceMean == null) {
+        return insufficientResult(run, { ...routed, metricKey }, `Whether the latest ${def.shortLabel} is normal for this athlete can't be judged yet.`, `Reason: ${rvn.insufficient ?? res.insufficient ?? "no comparable history"}.`, ["What information is missing?"]);
+      }
+      const p = def.precision;
+      const latestV = Number(rvn.latest.value.toFixed(p));
+      const refV = Number(rvn.referenceMean.toFixed(p));
+      const diffV = Number(rvn.diff!.toFixed(p));
+      const pctV = rvn.pctDiff != null ? Number(rvn.pctDiff.toFixed(1)) : null;
+      const rvnRef: EvidenceRef = {
+        id: `series:${metricKey}:bilateral:rvn:${window}`,
+        type: "metric_series",
+        label: `${def.shortLabel}: latest ${latestV} vs mean ${refV} ${def.unit} of the previous ${rvn.referenceCount} valid sessions`,
+        values: [latestV, refV, diffV, ...(pctV != null ? [pctV] : []), rvn.referenceCount, window],
+        unit: def.unit,
+        date: rvn.latest.date,
+      };
+      const claim = buildClaim({
+        text: `${def.shortLabel} on ${rvn.latest.date} is ${latestV} ${def.unit} vs an average of ${refV} ${def.unit} across the previous ${rvn.referenceCount} valid sessions — a difference of ${diffV > 0 ? "+" : ""}${diffV} ${def.unit}${pctV != null ? ` (${pctV > 0 ? "+" : ""}${pctV}%)` : ""}. The latest session is never part of the window used to judge it.`,
+        claimType: "context",
+        metricKey,
+        comparisonWindow: `latest-vs-previous-${window}`,
+        evidenceRefs: [rvnRef, ...res.evidence.slice(0, 2)],
+        confidence: rvn.insufficient ? "moderate" : "high",
+        uncertaintyReason: rvn.insufficient ?? undefined,
+      });
+      const limitations = [
+        "This is a descriptive comparison with the athlete's own recent values. Whether a difference exceeds normal measurement variability is NOT assessed here — that requires the reliability/monitoring engine's configured thresholds.",
+      ];
+      if (rvn.insufficient) limitations.push(rvn.insufficient + ".");
+      return {
+        summary: `${claim.text} ${DEFER}`,
+        claims: [claim],
+        directAnswer: `The latest ${def.shortLabel} is ${Math.abs(diffV) < 1 / 10 ** p ? "essentially at" : diffV > 0 ? "above" : "below"} the athlete's recent average by ${Math.abs(diffV)} ${def.unit}${pctV != null ? ` (${Math.abs(pctV)}%)` : ""}.`,
+        keyValues: [
+          { label: "Latest", value: String(latestV), unit: def.unit },
+          { label: `Avg of previous ${rvn.referenceCount}`, value: String(refV), unit: def.unit },
+          { label: "Difference", value: `${diffV > 0 ? "+" : ""}${diffV}`, unit: def.unit },
+          ...(pctV != null ? [{ label: "Difference %", value: `${pctV > 0 ? "+" : ""}${pctV}`, unit: "%" }] : []),
+        ],
+        comparisonBasis: `Latest session vs the mean of the previous ${rvn.referenceCount} valid sessions (requested window ${window}); the latest value is excluded from its own reference.`,
+        limitations,
+        suggestedNext: ["Open the trend chart to see where this session sits."],
+        followUps: [`What changed in ${def.shortLabel} over time?`, "How does this athlete compare with the team?"],
+        contextUsed: { metricKey, testType: def.testType, window: `previous-${rvn.referenceCount}` },
       };
     }
 

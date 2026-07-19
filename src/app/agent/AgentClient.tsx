@@ -275,6 +275,20 @@ export default function AgentClient(props: Props) {
     testType: props.initialContext?.testType || undefined,
     metricKey: props.initialContext?.metricKey || undefined,
   });
+  const [tags, setTags] = useState<{ testType?: string; metricKey?: string; comparison?: string }>({});
+  const [feedbackSent, setFeedbackSent] = useState<Record<string, string>>({});
+
+  /* stale-context protection: switching athletes clears every ask-side state */
+  const athleteIdRef = useRef(athlete.id);
+  useEffect(() => {
+    if (athleteIdRef.current !== athlete.id) {
+      athleteIdRef.current = athlete.id;
+      setQuestionText("");
+      setAskCtx({});
+      setTags({});
+      setAnswerId(null);
+    }
+  }, [athlete.id]);
   const viewRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const sheetRef = useRef<HTMLDivElement | null>(null);
 
@@ -353,7 +367,7 @@ export default function AgentClient(props: Props) {
   );
 
   const askFree = useCallback(
-    (q: string) => {
+    (q: string, withTags?: { testType?: string; metricKey?: string; comparison?: string }) => {
       const trimmed = q.trim();
       if (trimmed.length < 3) return;
       setQuestionText(trimmed);
@@ -362,11 +376,40 @@ export default function AgentClient(props: Props) {
           task: "question",
           question: trimmed,
           context: askCtx.testType || askCtx.metricKey ? askCtx : undefined,
+          tags: withTags && (withTags.testType || withTags.metricKey || withTags.comparison) ? withTags : undefined,
         },
         "freeform"
       );
     },
     [execute, askCtx]
+  );
+
+  /** tag builder → the SAME canonical query path (synthesized question + explicit tags) */
+  const askFromTags = useCallback(() => {
+    const q =
+      tags.comparison === "team" ? "How does this athlete compare with the team?"
+        : tags.comparison === "position" ? "How does this athlete compare with other players at their position?"
+          : tags.comparison === "normal" ? "Is the latest result normal for this athlete?"
+            : tags.comparison === "baseline" ? "How does the current session compare with the baseline?"
+              : tags.comparison === "change" ? "What changed over time?"
+                : "Summarize this athlete's current status.";
+    askFree(q, tags);
+  }, [tags, askFree]);
+
+  const sendFeedback = useCallback(
+    async (runId: string, rating: string) => {
+      setFeedbackSent((p) => ({ ...p, [runId]: rating }));
+      try {
+        await fetch("/api/agent/feedback", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ runId, rating }),
+        });
+      } catch {
+        /* feedback is best-effort */
+      }
+    },
+    []
   );
 
   /* keep the visible context in sync with what the router actually used */
@@ -873,6 +916,48 @@ export default function AgentClient(props: Props) {
             </button>
           </form>
 
+          {/* tag-based query builder — same canonical query path as free text */}
+          <details style={{ marginBottom: 10 }}>
+            <summary style={{ cursor: "pointer", fontSize: 12.5, color: "var(--ink-dim)" }}>
+              Build a question with tags
+            </summary>
+            <div className="filterbar" style={{ marginTop: 8 }}>
+              <label>
+                Test
+                <select value={tags.testType ?? ""} onChange={(e) => setTags((p) => ({ ...p, testType: e.target.value || undefined }))}>
+                  <option value="">Any</option>
+                  <option value="cmj">CMJ</option>
+                  <option value="imtp">IMTP</option>
+                  <option value="drop_jump">Drop Jump</option>
+                  <option value="vbt">VBT</option>
+                </select>
+              </label>
+              <label>
+                Metric
+                <select value={tags.metricKey ?? ""} onChange={(e) => setTags((p) => ({ ...p, metricKey: e.target.value || undefined }))}>
+                  <option value="">Any</option>
+                  {Object.values(METRICS)
+                    .filter((m) => m.visibility === "primary" && m.status === "implemented" && (!tags.testType || m.testType === tags.testType))
+                    .map((m) => (
+                      <option key={m.key} value={m.key}>{m.shortLabel}</option>
+                    ))}
+                </select>
+              </label>
+              <label>
+                Comparison
+                <select value={tags.comparison ?? ""} onChange={(e) => setTags((p) => ({ ...p, comparison: e.target.value || undefined }))}>
+                  <option value="">Current status</option>
+                  <option value="normal">Latest vs their normal</option>
+                  <option value="change">Change over time</option>
+                  <option value="team">vs team</option>
+                  <option value="position">vs position group</option>
+                  <option value="baseline">vs baseline</option>
+                </select>
+              </label>
+              <button className="btn" type="button" disabled={!!busy} onClick={askFromTags}>Ask with tags</button>
+            </div>
+          </details>
+
           {/* active context — visible and editable */}
           {(askCtx.testType || askCtx.metricKey) && (
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
@@ -919,7 +1004,17 @@ export default function AgentClient(props: Props) {
             </article>
           )}
 
-          {!clarifyRun && answerRun?.answer ? (
+          {!clarifyRun && answerRun?.answer && (answerRun.answerHidden || answerRun.eval.status === "fail") ? (
+            <article className="ans" style={{ borderLeft: "3px solid var(--alert)" }}>
+              <div className="eyebrow">Answer withheld</div>
+              <h2 className="ans-q">{answerRun.answer.question}</h2>
+              <p className="ans-summary">
+                This answer failed the deterministic safety evaluation even after automatic repair, so it is not
+                shown. The full details are preserved in the Developer &amp; Audit view. Try re-phrasing the
+                question or one of the guided questions.
+              </p>
+            </article>
+          ) : !clarifyRun && answerRun?.answer ? (
             <article className="ans">
               <div className="eyebrow">Answer</div>
               <h2 className="ans-q">{answerRun.answer.question}</h2>
@@ -978,6 +1073,18 @@ export default function AgentClient(props: Props) {
                 </div>
               )}
 
+              {/* structured feedback */}
+              <div style={{ marginTop: 12, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                <span className="fb-ctx">Was this useful?</span>
+                {([["helpful", "Helpful"], ["not_what_i_asked", "Not what I asked"], ["wrong_context", "Wrong context"], ["too_technical", "Too technical"], ["missing_option", "Missing option"]] as const).map(([key, label]) => (
+                  <button key={key} className="chip" disabled={!!feedbackSent[answerRun.runId]}
+                    style={{ cursor: "pointer", background: feedbackSent[answerRun.runId] === key ? "var(--bg2)" : "transparent" }}
+                    onClick={() => sendFeedback(answerRun.runId, key)}>
+                    {label}
+                  </button>
+                ))}
+                {feedbackSent[answerRun.runId] && <span className="fb-ctx">Thanks — recorded.</span>}
+              </div>
               <p className="fb-ctx" style={{ marginTop: 10 }}>Answered {shortTime(answerRun.createdAt)}</p>
             </article>
           ) : !clarifyRun ? (

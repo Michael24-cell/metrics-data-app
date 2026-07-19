@@ -35,7 +35,7 @@ import {
 } from "./schemas";
 import { scriptedAnswer, scriptedReport } from "./scripted";
 import { scriptedFreeform } from "./freeform";
-import { QuestionContext, RoutedIntent, routeQuestion } from "./intent";
+import { buildQuerySpec, QueryTags, QuestionContext, RoutedIntent, routeQuestion } from "./intent";
 import { createToolExecutor, TOOL_SCHEMA_VERSION, ToolExecutor } from "./tools";
 
 export interface RunAgentInput {
@@ -48,6 +48,11 @@ export interface RunAgentInput {
   question?: string;
   /** page context the question was asked from (test/metric/window hints) */
   context?: QuestionContext;
+  /** explicit structured tags from the query builder (below free-text precedence) */
+  tags?: QueryTags;
+  /** authenticated caller, for the tool plan + audit (null in demo mode) */
+  userId?: string | null;
+  userRole?: string | null;
   findingId?: string;
   asOf?: string;
   /** override for tests; production resolves from env + key presence */
@@ -133,7 +138,7 @@ export async function runAgent(input: RunAgentInput, deps: RunAgentDeps = {}): P
   let routed: RoutedIntent | undefined;
   if (isFreeform) {
     const routeStarted = Date.now();
-    routed = routeQuestion(input.question!, input.context ?? {});
+    routed = routeQuestion(input.question!, input.context ?? {}, input.tags ?? {});
     trace.push({
       step: trace.length + 1,
       stage: "intake",
@@ -163,6 +168,20 @@ export async function runAgent(input: RunAgentInput, deps: RunAgentDeps = {}): P
   const routedIntentSummary = routed
     ? { kind: routed.kind, testType: routed.testType, metricKey: routed.metricKey, cohort: routed.cohort, requiredTools: routed.requiredTools }
     : undefined;
+  const querySpec = routed ? buildQuerySpec(routed) : undefined;
+  const toolPlan = routed
+    ? {
+        version: "1.0.0" as const,
+        facilityId: input.facilityId,
+        userId: input.userId ?? null,
+        role: input.userRole ?? null,
+        tools: routed.requiredTools,
+        maxCalls: 8,
+        deadlineMs: 180_000,
+        requiredEvidence: routed.requiredTools.map((t) => `outcome:${t}`),
+        answerTemplate: routed.kind,
+      }
+    : undefined;
 
   /* clarification: return before any composing — the trainer picks a basis first */
   if (routed?.clarification) {
@@ -179,6 +198,8 @@ export async function runAgent(input: RunAgentInput, deps: RunAgentDeps = {}): P
       trace,
       clarification: routed.clarification,
       routedIntent: routedIntentSummary,
+      querySpec,
+      toolPlan,
       eval: {
         status: "pass",
         checks: [{ name: "clarification_only", status: "pass", detail: "No claims were made — the router asked for one clarification before answering, instead of silently choosing a comparison basis." }],
@@ -366,11 +387,49 @@ export async function runAgent(input: RunAgentInput, deps: RunAgentDeps = {}): P
     await buildFromScripted();
   }
 
-  /* ---- stage 3: deterministic evaluation ---- */
+  /* ---- stage 3: deterministic evaluation (+ one deterministic repair) ---- */
   stage = "evaluation";
+  let evalResult = evaluateOutput((report ?? answer)!, resolver);
+  let answerHidden: boolean | undefined;
+  if (evalResult.status === "fail" && answer && isFreeform) {
+    if (mode === "live") {
+      // Deterministic repair: recompose from the intent-specific template
+      // over trusted tool output — the model is never asked to freely retry.
+      const repairStarted = Date.now();
+      try {
+        const s = await scriptedFreeform(executor, routed!);
+        answer = {
+          ...answer,
+          summary: s.summary,
+          claims: s.claims,
+          dataUsed: collectDataUsed(s.claims),
+          directAnswer: s.directAnswer,
+          keyValues: s.keyValues,
+          comparisonBasis: s.comparisonBasis,
+          limitations: s.limitations,
+          suggestedNext: s.suggestedNext,
+          followUps: s.followUps,
+          contextUsed: s.contextUsed,
+        };
+        evalResult = evaluateOutput(answer, resolver); // re-evaluate exactly once
+        trace.push({
+          step: trace.length + 1,
+          stage: "evaluation",
+          tool: "deterministicRepair",
+          inputSummary: "live answer failed evaluation",
+          resultSummary: `Recomposed from the '${routed!.kind}' deterministic template — re-evaluation: ${evalResult.status.toUpperCase()}`,
+          evidenceIds: [],
+          status: evalResult.status === "fail" ? "error" : "ok",
+          ms: Date.now() - repairStarted,
+        });
+      } catch {
+        /* repair itself failed — fall through to hiding */
+      }
+    }
+    if (evalResult.status === "fail") answerHidden = true; // still failing → the UI hides the answer body
+  }
   const output = (report ?? answer)!;
   const evalStarted = Date.now();
-  const evalResult = evaluateOutput(output, resolver);
   trace.push({
     step: trace.length + 1,
     stage: "evaluation",
@@ -414,6 +473,9 @@ export async function runAgent(input: RunAgentInput, deps: RunAgentDeps = {}): P
     report,
     answer,
     routedIntent: routedIntentSummary,
+    querySpec,
+    toolPlan,
+    answerHidden,
     eval: evalResult,
     provenance: {
       runId,

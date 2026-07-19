@@ -274,8 +274,27 @@ export interface AgentRun {
   clarification?: ClarificationRequest;
   /** router output for the Developer/Audit view (never shown in trainer UI) */
   routedIntent?: { kind: string; testType?: string; metricKey?: string; cohort?: string; requiredTools: string[] };
+  /** versioned resolved-query contract (field-level value/confidence/provenance) */
+  querySpec?: unknown; // QuerySpecV1 — typed in intent.ts (kept loose here to stay client-safe)
+  /** bounded tool plan (Developer/Audit view only) */
+  toolPlan?: ToolPlanV1;
+  /** true when evaluation failed after deterministic repair — UI must hide the answer body */
+  answerHidden?: boolean;
   eval: EvalResult;
   provenance: Provenance;
+}
+
+export interface ToolPlanV1 {
+  version: "1.0.0";
+  facilityId: string;
+  userId: string | null;
+  role: string | null;
+  /** ordered tools the plan expects (advisory in live mode, exact in scripted) */
+  tools: string[];
+  maxCalls: number;
+  deadlineMs: number;
+  requiredEvidence: string[];
+  answerTemplate: string; // the intent-specific deterministic template key
 }
 
 /* ------------------------------------------------------------------ */

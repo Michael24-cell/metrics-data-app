@@ -348,6 +348,21 @@ CREATE TABLE IF NOT EXISTS agent_run_record (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_run_facility ON agent_run_record(facility_id, athlete_id, created_at);
 
+CREATE TABLE IF NOT EXISTS agent_feedback (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  run_id TEXT NOT NULL,
+  user_id TEXT,
+  rating TEXT NOT NULL,                          -- helpful | not_what_i_asked | wrong_context | too_technical | missing_option
+  query_version TEXT,
+  answer_mode TEXT,
+  eval_status TEXT,
+  latency_ms INTEGER,
+  user_role TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(run_id, user_id, rating)
+);
+
 CREATE TABLE IF NOT EXISTS idempotency_key (
   key TEXT PRIMARY KEY,                          -- caller-scoped: facility:user:operation:hash
   result_json TEXT NOT NULL,
