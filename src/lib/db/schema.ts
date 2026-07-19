@@ -363,6 +363,46 @@ CREATE TABLE IF NOT EXISTS agent_feedback (
   UNIQUE(run_id, user_id, rating)
 );
 
+/* ================= monitoring policy + results (additive) ================= */
+
+CREATE TABLE IF NOT EXISTS monitoring_policy (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  scope TEXT NOT NULL,                           -- facility | coach | athlete
+  coach_user_id TEXT,                            -- scope=coach
+  athlete_id TEXT,                               -- scope=athlete
+  version INTEGER NOT NULL,                      -- bumps per scope-target; old rows preserved
+  config_json TEXT NOT NULL,                     -- partial MonitoringPolicyV1 overrides
+  created_by TEXT,
+  active INTEGER NOT NULL DEFAULT 1,             -- exactly one active row per scope-target
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_monpolicy ON monitoring_policy(facility_id, scope, athlete_id, coach_user_id, active);
+
+CREATE TABLE IF NOT EXISTS monitoring_result (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  metric_key TEXT NOT NULL,
+  session_id TEXT NOT NULL REFERENCES session(id),
+  session_date TEXT NOT NULL,
+  monitoring_state TEXT NOT NULL,                -- within_expected_range | review_suggested | repeated_low_signal | collecting_baseline | insufficient_reliable_data
+  range_state TEXT NOT NULL,                     -- above_expected | within_expected | below_expected | insufficient_data
+  noise_state TEXT NOT NULL,                     -- exceeds_threshold | within_noise | reliability_unavailable | reliability_poor
+  current_value REAL NOT NULL,
+  reference_mean REAL,
+  reference_sd REAL,
+  band_low REAL,
+  band_high REAL,
+  reference_count INTEGER NOT NULL,
+  policy_fingerprint TEXT NOT NULL,              -- versioned identity of the effective policy used
+  policy_snapshot_json TEXT NOT NULL,            -- full effective policy at generation time (immutable)
+  calc_version TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(facility_id, athlete_id, metric_key, session_id, policy_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_monresult ON monitoring_result(facility_id, athlete_id, metric_key, session_date);
+
 CREATE TABLE IF NOT EXISTS idempotency_key (
   key TEXT PRIMARY KEY,                          -- caller-scoped: facility:user:operation:hash
   result_json TEXT NOT NULL,
