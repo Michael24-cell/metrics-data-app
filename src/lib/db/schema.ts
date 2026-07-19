@@ -403,6 +403,33 @@ CREATE TABLE IF NOT EXISTS monitoring_result (
 );
 CREATE INDEX IF NOT EXISTS idx_monresult ON monitoring_result(facility_id, athlete_id, metric_key, session_date);
 
+CREATE TABLE IF NOT EXISTS alert (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  test_type TEXT,
+  metric_key TEXT,
+  session_id TEXT,
+  session_date TEXT,
+  alert_type TEXT NOT NULL,                      -- review_suggested | repeated_low_signal | new_pr | asymmetry_crossing | reliability_concern | monitoring_data_gap | baseline_completed
+  severity TEXT NOT NULL,                        -- info | review | high
+  monitoring_result_id TEXT,
+  policy_fingerprint TEXT,
+  calc_version TEXT,
+  evidence_json TEXT NOT NULL,                   -- values/refs supporting the alert
+  dedupe_key TEXT NOT NULL UNIQUE,               -- same source event never duplicates
+  status TEXT NOT NULL DEFAULT 'new',            -- new | acknowledged | resolved | dismissed
+  created_at TEXT NOT NULL,
+  acknowledged_by TEXT,
+  acknowledged_at TEXT,
+  closed_by TEXT,
+  closed_at TEXT,
+  close_reason TEXT,                             -- resolution or dismissal reason
+  coach_note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_alert_facility ON alert(facility_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_alert_athlete ON alert(facility_id, athlete_id, created_at);
+
 CREATE TABLE IF NOT EXISTS idempotency_key (
   key TEXT PRIMARY KEY,                          -- caller-scoped: facility:user:operation:hash
   result_json TEXT NOT NULL,

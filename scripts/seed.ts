@@ -777,6 +777,22 @@ import { createUser, addMembership } from "../src/lib/auth/auth";
   console.log(`Demo users seeded (password: ${PW}) — admin/coach/analyst/viewer@ridgeline.demo, coach@harborcity.demo, multi@tracelab.demo`);
 }
 
+/* ---------------- monitoring templates + job (Phase 4/5 demo states) ---------------- */
+
+import { savePolicyLayer } from "../src/lib/services/monitoringPolicy";
+import { runMonitoringJob } from "../src/lib/services/alerts";
+
+{
+  // Facility templates: Ridgeline monitors jump height + IMTP peak force;
+  // Harbor City keeps the product default (jump height only).
+  savePolicyLayer(RPI, "facility", { metricKeys: ["cmj_jump_height", "imtp_peak_force"] }, { createdBy: null });
+  // Athlete override example: Kai on a 7-session rolling window.
+  savePolicyLayer(RPI, "athlete", { rollingWindow: 7 }, { athleteId: maya.id, createdBy: null });
+  const r1 = runMonitoringJob(RPI);
+  const r2 = runMonitoringJob(HCFC);
+  console.log(`Monitoring job: RPI ${r1.athletes} athletes → ${r1.alertsCreated} alerts; HCFC ${r2.athletes} athletes → ${r2.alertsCreated} alerts`);
+}
+
 /* ---------------- summary ---------------- */
 
 const counts = (table: string) =>

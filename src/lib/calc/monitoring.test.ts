@@ -142,8 +142,27 @@ describe("consecutive low signals and recovery", () => {
 });
 
 describe("policy hierarchy, versioning, and replay (DB)", () => {
-  const facilityId = (getDb().prepare(`SELECT id FROM facility LIMIT 1`).get() as { id: string }).id;
-  const athleteId = (getDb().prepare(`SELECT id FROM athlete WHERE facility_id = ? LIMIT 1`).get(facilityId) as { id: string }).id;
+  // dedicated fixture FACILITY + athlete so tests never mutate real demo
+  // facilities' or athletes' policy layers (which the seeded demo relies on)
+  const facilityId = (() => {
+    const db = getDb();
+    const existing = db.prepare(`SELECT id FROM facility WHERE name = 'Policy Test Facility'`).get() as { id: string } | undefined;
+    if (existing) return existing.id;
+    const id = newId();
+    db.prepare(`INSERT INTO facility (id, name, short_name, created_at) VALUES (?, 'Policy Test Facility', 'PolicyTest', ?)`).run(id, nowIso());
+    return id;
+  })();
+  const athleteId = (() => {
+    const db = getDb();
+    const existing = db.prepare(`SELECT id FROM athlete WHERE facility_id = ? AND display_name = 'Policy Test Athlete'`).get(facilityId) as { id: string } | undefined;
+    if (existing) return existing.id;
+    const id = newId();
+    db.prepare(
+      `INSERT INTO athlete (id, facility_id, display_name, sport, position, team, sex, birth_year, height_cm, mass_kg, status, created_at)
+       VALUES (?, ?, 'Policy Test Athlete', 'Basketball', 'Guard', 'Test Team', 'M', 2000, 190, 90, 'active', ?)`
+    ).run(id, facilityId, nowIso());
+    return id;
+  })();
 
   it("layers merge default ← facility ← coach ← athlete with traceability", () => {
     const coachId = `coach-${newId()}`;
