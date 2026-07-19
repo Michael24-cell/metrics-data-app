@@ -49,11 +49,17 @@ describe("V2.1 — cohort resolution and aliases", () => {
   it("an athlete with no roster position or data gets an honest insufficient answer, not a fake cohort", async () => {
     const db = getDb();
     const omar = byName.get("Omar Haddad")!;
-    const id = newId();
-    db.prepare(
-      `INSERT INTO athlete (id, facility_id, display_name, sport, position, team, sex, birth_year, height_cm, mass_kg, status, created_at)
-       VALUES (?, ?, 'No Position Test', 'Basketball', NULL, 'Men''s Basketball', 'M', 2000, 200, 100, 'active', ?)`
-    ).run(id, omar.facility_id, nowIso());
+    // idempotent: reuse the fixture athlete if an earlier run created it
+    const existing = db
+      .prepare(`SELECT id FROM athlete WHERE facility_id = ? AND display_name = 'No Position Test'`)
+      .get(omar.facility_id) as { id: string } | undefined;
+    const id = existing?.id ?? newId();
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO athlete (id, facility_id, display_name, sport, position, team, sex, birth_year, height_cm, mass_kg, status, created_at)
+         VALUES (?, ?, 'No Position Test', 'Basketball', NULL, 'Men''s Basketball', 'M', 2000, 200, 100, 'active', ?)`
+      ).run(id, omar.facility_id, nowIso());
+    }
     const run = await runAgent({
       facilityId: omar.facility_id, athleteId: id, athleteName: "No Position Test",
       task: "question", question: "How does this athlete compare with the team?",

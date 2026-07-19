@@ -1,11 +1,10 @@
 import { defineConfig } from "vitest/config";
-import path from "node:path";
 
 export default defineConfig({
-  resolve: {
-    alias: { "@": path.resolve(__dirname, "src") },
-  },
   test: {
-    include: ["src/**/*.test.ts", "tests/**/*.test.ts"],
+    // Several suites exercise the real seeded SQLite database; running test
+    // FILES sequentially avoids cross-process write-lock contention that
+    // silently skips suites. Total runtime stays ~2s.
+    fileParallelism: false,
   },
 });
