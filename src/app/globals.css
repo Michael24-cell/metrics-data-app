@@ -80,6 +80,8 @@ button { font-family: inherit; }
   position: sticky;
   top: 0;
   z-index: 50;
+  max-width: 100vw;
+  overflow-x: auto;
 }
 
 .brand {
@@ -90,6 +92,7 @@ button { font-family: inherit; }
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
 }
 .brand svg { display: block; }
 .brand:hover { color: var(--ink); }
@@ -98,7 +101,7 @@ button { font-family: inherit; }
   color: var(--accent);
 }
 
-.appnav { display: flex; gap: 4px; flex: 1; }
+.appnav { display: flex; gap: 4px; flex: 1; flex-shrink: 0; white-space: nowrap; }
 .appnav a {
   padding: 6px 12px;
   border-radius: var(--radius);
@@ -115,6 +118,7 @@ button { font-family: inherit; }
   gap: 8px;
   font-size: 12.5px;
   color: var(--ink-dim);
+  flex-shrink: 0;
 }
 .facility-switch a {
   padding: 5px 11px;

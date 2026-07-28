@@ -580,15 +580,23 @@ function runSynthetic(athlete: AthleteSpec, input: SyntheticInput, facilityId = 
   const rows: string[] = ["athlete_id,test_type,session_date,metric_type,side,value"];
   const rand = rng(909);
   let d = "2026-05-04";
-  for (let n = 0; n < 6; n++) {
+  // 8 sessions on an 8-day cadence (not 12): the last two still straddle the
+  // facility's 15% flag threshold (session 7 ~14.1%, session 8 ~15.5%) — a
+  // genuine asymmetry_crossing alert on a MONITORED metric (imtp_peak_force
+  // is in the RPI facility template) — but now the whole series stays on or
+  // before the demo's fixed TODAY, matching the same invariant enforced
+  // elsewhere in this seed (no session may be dated after TODAY, or facility-
+  // wide staleness/completeness calculations for every OTHER athlete skew).
+  for (let n = 0; n < 8; n++) {
+    if (d > TODAY) break;
     const right = 3150 + (rand() - 0.5) * 100;
-    const ratio = 0.94 - n * 0.012; // asymmetry grows toward ~12%
+    const ratio = 0.94 - n * 0.012; // asymmetry grows toward ~15.5%
     const left = right * ratio;
     rows.push(`${jonas.id},imtp,${d},imtp_peak_force,left,${left.toFixed(0)}`);
     rows.push(`${jonas.id},imtp,${d},imtp_peak_force,right,${right.toFixed(0)}`);
     rows.push(`${jonas.id},imtp,${d},imtp_peak_force,bilateral,${(left + right).toFixed(0)}`);
     rows.push(`${jonas.id},imtp,${d},imtp_relative_force,bilateral,${((left + right) / 88).toFixed(2)}`);
-    d = addDays(d, 12);
+    d = addDays(d, 8);
   }
   const result = runImportBatch(
     csvGenericAdapter,
@@ -596,6 +604,47 @@ function runSynthetic(athlete: AthleteSpec, input: SyntheticInput, facilityId = 
     RPI, srcCsv, "jonas_imtp_export.csv"
   );
   console.log(`CSV import (Jonas): ${result.status}, ${result.metricCount} metrics, ${result.findingsGenerated} findings`);
+}
+
+/* ---------------- Poor within-session reliability demo athlete ---------------- */
+//
+// A dedicated athlete (not reused from elsewhere) whose CMJ trials swing
+// wildly within each session — deliberately large per-trial velocity spread
+// — so within-session CV stays well above the provisional 10% warning
+// threshold across enough eligible sessions to leave the monitoring
+// baseline and land in poor_within_session_reliability / a reliability
+// alert, without perturbing any other athlete's established narrative.
+{
+  const relDemo: AthleteSpec = {
+    id: newId(), name: "Noah Whitfield", sport: "Basketball", position: "Guard",
+    team: "Men's Basketball", sex: "M", birthYear: 2003, heightCm: 189, massKg: 87, status: "active",
+  };
+  addAthlete(RPI, relDemo);
+  const rand = rng(31337);
+  const sessions: { athleteId: string; testType: string; sessionDate: string; deviceId: string; trials: { trialNumber: number; waveform: ReturnType<typeof generateCmjTrace> }[] }[] = [];
+  // start early enough that 18 sessions on a ~7-day cadence still land
+  // several sessions PAST the 15-session baseline before TODAY, so at least
+  // one active (non-baseline) poor-reliability classification exists.
+  let d = "2025-12-01";
+  for (let n = 0; n < 18; n++) {
+    if (d > TODAY) break;
+    const trials = [0, 1, 2].map((ti) => ({
+      trialNumber: ti + 1,
+      // ±0.35 m/s swing across trials (vs ~±0.015 for every other athlete)
+      // deliberately blows up within-session CV well past the 10% warning.
+      waveform: generateCmjTrace({
+        massKg: relDemo.massKg,
+        takeoffVelocity: 2.55 + (ti - 1) * 0.35 + (rand() - 0.5) * 0.05,
+        depthFactor: 1.0 + (rand() - 0.5) * 0.08,
+        leftShare: 0.5 + (rand() - 0.5) * 0.01,
+        seed: 31337 + n * 10 + ti,
+      }),
+    }));
+    sessions.push({ athleteId: relDemo.id, testType: "cmj", sessionDate: d, deviceId: rpiPlate, trials });
+    d = addDays(d, 6 + Math.round(rand() * 2));
+  }
+  const result = runImportBatch(syntheticSignalAdapter, { sessions }, RPI, srcSynthetic, "Noah Whitfield force-plate history (reliability demo)");
+  console.log(`Noah Whitfield (poor-reliability demo): ${result.status}, ${result.metricCount} metrics`);
 }
 
 /* ---------------- Demo dataset import: Priya (metric-only, no sides) ---------------- */

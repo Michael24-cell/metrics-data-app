@@ -28,6 +28,22 @@ export interface FreeformResult {
 type Run = (name: string, input?: Record<string, unknown>) => Promise<ToolOutcome>;
 
 const DEFER = "Evidence for coach review — this system explains evidence; it does not make the final call.";
+
+/* Unambiguous labels for alert types echoed into agent claim text — plain
+   `.replace(/_/g," ")` on "baseline_completed" reads as a bare "baseline"
+   statement, which trips the reference-vs-recent baseline_distinction
+   safety check even though it is the MONITORING baseline lifecycle, a
+   distinct sense (see evals.ts). */
+const ALERT_TYPE_LABEL: Record<string, string> = {
+  review_suggested: "review suggested",
+  repeated_low_signal: "repeated low signal",
+  new_pr: "new PR",
+  asymmetry_crossing: "asymmetry threshold crossing",
+  reliability_concern: "metric reliability concern",
+  monitoring_data_gap: "monitoring data gap",
+  baseline_completed: "monitoring baseline completed",
+};
+const alertTypeLabel = (t: string) => ALERT_TYPE_LABEL[t] ?? t.replace(/_/g, " ");
 const r1 = (v: number) => Math.round(v * 10) / 10;
 const rp = (v: number, p: number) => Number(v.toFixed(p));
 
@@ -514,7 +530,7 @@ export async function scriptedFreeform(executor: ToolExecutor, routed: RoutedInt
         }
         const d = res.data as { team: string; openCount: number; byType: Record<string, string[]> };
         const claim = buildClaim({
-          text: `${d.team} has ${d.openCount} open alert(s). ${Object.entries(d.byType).map(([t2, names]) => `${t2.replace(/_/g, " ")}: ${names.join(", ")}`).join("; ") || "None."}`,
+          text: `${d.team} has ${d.openCount} open alert(s). ${Object.entries(d.byType).map(([t2, names]) => `${alertTypeLabel(t2)}: ${names.join(", ")}`).join("; ") || "None."}`,
           claimType: "context",
           comparisonWindow: "open-alerts",
           evidenceRefs: res.evidence,
@@ -596,7 +612,7 @@ export async function scriptedFreeform(executor: ToolExecutor, routed: RoutedInt
         };
         claims.push(
           buildClaim({
-            text: `${openForMetric.length} open alert(s) reference this athlete${routed.metricKey ? " and metric" : ""}: ${[...new Set(openForMetric.map((a2) => a2.type.replace(/_/g, " ")))].join(", ")}.`,
+            text: `${openForMetric.length} open alert(s) reference this athlete${routed.metricKey ? " and metric" : ""}: ${[...new Set(openForMetric.map((a2) => alertTypeLabel(a2.type)))].join(", ")}.`,
             claimType: "context",
             comparisonWindow: "open-alerts",
             evidenceRefs: [countRef, ...(alertEv.length ? alertEv : ev)].slice(0, 8),
