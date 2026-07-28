@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getAthlete } from "@/lib/db/dal";
-import { getDb, nowIso } from "@/lib/db/db";
 import { runAgent } from "@/lib/agent/runner";
+import { saveAgentRunRecord } from "@/lib/agent/runs";
 import { QUESTION_KEYS } from "@/lib/agent/schemas";
 import { apiContext, isDenied, rateLimit } from "@/lib/authz";
 import { recordAudit } from "@/lib/audit";
+import { sameOriginDenied } from "@/lib/requestSecurity";
 
 const recentRuns = new Map<string, { at: number; run: unknown }>();
 
@@ -57,6 +58,8 @@ const BodySchema = z
   .strict();
 
 export async function POST(req: NextRequest) {
+  const originDenied = sameOriginDenied(req);
+  if (originDenied) return originDenied;
   const ctx = await apiContext("agent.ask");
   if (isDenied(ctx)) return ctx;
   const facility = ctx.facility;
@@ -105,12 +108,7 @@ export async function POST(req: NextRequest) {
     });
     // Server-side record: tenancy-scoped persistence for audit and access
     // control (the client keeps its localStorage copy for UX).
-    getDb()
-      .prepare(
-        `INSERT OR REPLACE INTO agent_run_record (run_id, facility_id, athlete_id, user_id, task, question, eval_status, mode, run_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(run.runId, facility.id, athlete.id, ctx.user?.id ?? null, run.task, run.question ?? run.questionKey ?? null, run.eval.status, run.mode, JSON.stringify(run), nowIso());
+    saveAgentRunRecord(run, ctx.user?.id ?? null);
     recordAudit({
       facilityId: facility.id,
       userId: ctx.user?.id,
@@ -126,10 +124,11 @@ export async function POST(req: NextRequest) {
       for (const [k, v] of recentRuns) if (Date.now() - v.at > 8000) recentRuns.delete(k);
     }
     return NextResponse.json(run);
-  } catch (e) {
-    return NextResponse.json(
-      { error: `Agent run failed: ${e instanceof Error ? e.message : String(e)}` },
-      { status: 500 }
-    );
+  } catch {
+    recordAudit({
+      facilityId: facility.id, userId: ctx.user?.id, action: "agent.question",
+      resourceType: "athlete", resourceId: athlete.id, outcome: "error",
+    });
+    return NextResponse.json({ error: "Agent run failed. Retry or contact support with the audit timestamp." }, { status: 500 });
   }
 }

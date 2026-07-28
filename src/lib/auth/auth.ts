@@ -17,36 +17,93 @@
  * stored. Password hashes use scrypt (N=16384) with per-user salt.
  */
 
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { getDb, newId, nowIso } from "../db/db";
 import { Role, isRole } from "./roles";
 
 export type AuthMode = "demo" | "required";
 
-export function authMode(): AuthMode {
-  return process.env.TRACELAB_AUTH_MODE === "required" ? "required" : "demo";
+type AuthEnvironment = {
+  NODE_ENV?: string;
+  NEXT_PHASE?: string;
+  TRACELAB_AUTH_MODE?: string;
+  TRACELAB_SESSION_SECRET?: string;
+};
+
+export function validateAuthConfiguration(env: AuthEnvironment = process.env): void {
+  const configured = env.TRACELAB_AUTH_MODE;
+  if (configured && configured !== "demo" && configured !== "required") {
+    throw new Error(`Invalid TRACELAB_AUTH_MODE '${configured}'. Expected 'demo' or 'required'.`);
+  }
+  if (env.NODE_ENV === "production") {
+    if (configured === "demo") throw new Error("TRACELAB_AUTH_MODE=demo is forbidden in production.");
+    // Next evaluates route modules while compiling. Runtime requests still fail
+    // closed when the production secret is absent.
+    if (env.NEXT_PHASE !== "phase-production-build" && (!env.TRACELAB_SESSION_SECRET || env.TRACELAB_SESSION_SECRET.length < 32)) {
+      throw new Error("Production requires TRACELAB_SESSION_SECRET with at least 32 characters.");
+    }
+  } else if (env.NODE_ENV !== "test" && !configured) {
+    throw new Error("Set TRACELAB_AUTH_MODE explicitly to 'demo' or 'required'.");
+  }
+}
+
+export function authMode(env: AuthEnvironment = process.env): AuthMode {
+  validateAuthConfiguration(env);
+  if (env.NODE_ENV === "production") return "required";
+  return env.TRACELAB_AUTH_MODE === "required" ? "required" : "demo";
 }
 
 export const SESSION_COOKIE = "tl_session";
 export const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
+const tokenDigest = (token: string) => {
+  const secret = process.env.TRACELAB_SESSION_SECRET;
+  return secret ? createHmac("sha256", secret).update(token).digest("hex") : sha256(token);
+};
+
+const SCRYPT_N = 16384;
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
+const SCRYPT_KEYLEN = 64;
+const DUMMY_PASSWORD_HASH = `scrypt:${SCRYPT_N}:${SCRYPT_R}:${SCRYPT_P}:00000000000000000000000000000000:${
+  scryptSync("__tracelab_invalid_account__", "00000000000000000000000000000000", SCRYPT_KEYLEN, {
+    N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P,
+  }).toString("hex")
+}`;
 
 /* ---------------- passwords ---------------- */
 
 export function hashPassword(password: string): string {
   const salt = randomBytes(16).toString("hex");
-  const hash = scryptSync(password, salt, 64, { N: 16384 }).toString("hex");
-  return `scrypt:16384:${salt}:${hash}`;
+  const hash = scryptSync(password, salt, SCRYPT_KEYLEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P }).toString("hex");
+  return `scrypt:${SCRYPT_N}:${SCRYPT_R}:${SCRYPT_P}:${salt}:${hash}`;
 }
 
 export function verifyPassword(password: string, stored: string | null): boolean {
   if (!stored) return false;
-  const [scheme, nStr, salt, hash] = stored.split(":");
-  if (scheme !== "scrypt" || !salt || !hash) return false;
-  const candidate = scryptSync(password, salt, 64, { N: Number(nStr) || 16384 });
-  const expected = Buffer.from(hash, "hex");
-  return candidate.length === expected.length && timingSafeEqual(candidate, expected);
+  const parts = stored.split(":");
+  const legacy = parts.length === 4;
+  const [scheme, nStr, rStr, pStr, salt, hash] = legacy
+    ? [parts[0], parts[1], String(SCRYPT_R), String(SCRYPT_P), parts[2], parts[3]]
+    : parts;
+  const N = Number(nStr);
+  const r = Number(rStr);
+  const p = Number(pStr);
+  if (
+    scheme !== "scrypt" || !salt || !hash ||
+    !Number.isInteger(N) || N < 16384 || N > 1048576 || (N & (N - 1)) !== 0 ||
+    !Number.isInteger(r) || r < 1 || r > 32 ||
+    !Number.isInteger(p) || p < 1 || p > 16 ||
+    !/^[a-f0-9]{128}$/i.test(hash)
+  ) return false;
+  try {
+    const candidate = scryptSync(password, salt, SCRYPT_KEYLEN, { N, r, p, maxmem: 256 * N * r });
+    const expected = Buffer.from(hash, "hex");
+    return timingSafeEqual(candidate, expected);
+  } catch {
+    return false;
+  }
 }
 
 /* ---------------- users / sessions ---------------- */
@@ -68,25 +125,31 @@ export function createUser(email: string, displayName: string, password?: string
 }
 
 export function addMembership(userId: string, facilityId: string, role: Role): void {
-  getDb()
+  const db = getDb();
+  db
     .prepare(
       `INSERT INTO facility_membership (id, user_id, facility_id, role, created_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(user_id, facility_id) DO UPDATE SET role = excluded.role`
     )
     .run(newId(), userId, facilityId, role, nowIso());
+  // Membership creation and role changes are privilege changes. Existing
+  // bearer sessions are invalidated so the caller must authenticate again.
+  db.prepare(`DELETE FROM user_session WHERE user_id = ?`).run(userId);
 }
 
 /** Returns the raw bearer token (set it as an httpOnly cookie); only its hash is stored. */
 export function createSession(userId: string, now = Date.now()): string {
   const token = randomBytes(32).toString("hex");
-  getDb()
+  const db = getDb();
+  db.prepare(`DELETE FROM user_session WHERE user_id = ?`).run(userId);
+  db
     .prepare(`INSERT INTO user_session (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`)
-    .run(sha256(token), userId, new Date(now).toISOString(), new Date(now + SESSION_TTL_MS).toISOString());
+    .run(tokenDigest(token), userId, new Date(now).toISOString(), new Date(now + SESSION_TTL_MS).toISOString());
   return token;
 }
 
 export function destroySession(token: string): void {
-  getDb().prepare(`DELETE FROM user_session WHERE id = ?`).run(sha256(token));
+  getDb().prepare(`DELETE FROM user_session WHERE id = ?`).run(tokenDigest(token));
 }
 
 /** Validates token, expiry, and user status. Null on any failure — never throws. */
@@ -97,7 +160,7 @@ export function sessionUser(token: string | undefined | null, now = Date.now()):
       `SELECT u.id, u.email, u.display_name, u.status, s.expires_at
        FROM user_session s JOIN app_user u ON u.id = s.user_id WHERE s.id = ?`
     )
-    .get(sha256(token)) as (AppUser & { expires_at: string }) | undefined;
+    .get(tokenDigest(token)) as (AppUser & { expires_at: string }) | undefined;
   if (!row) return null;
   if (new Date(row.expires_at).getTime() <= now) return null;
   if (row.status !== "active") return null; // disabled / not-yet-activated users are denied
@@ -115,8 +178,10 @@ export function authenticate(email: string, password: string): AppUser | null {
   const row = getDb()
     .prepare(`SELECT id, email, display_name, status, password_hash FROM app_user WHERE email = ?`)
     .get(email.toLowerCase()) as (AppUser & { password_hash: string | null }) | undefined;
-  if (!row || row.status !== "active") return null;
-  if (!verifyPassword(password, row.password_hash)) return null;
+  // Always perform one bounded scrypt verification so unknown, invited, and
+  // disabled accounts do not take a fast path that enables enumeration.
+  const passwordOk = verifyPassword(password, row?.password_hash ?? DUMMY_PASSWORD_HASH);
+  if (!row || row.status !== "active" || !passwordOk) return null;
   return { id: row.id, email: row.email, display_name: row.display_name, status: row.status };
 }
 

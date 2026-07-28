@@ -7,8 +7,13 @@
     "build": "next build",
     "start": "next start",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "test:security": "vitest run src/lib/auth/security.test.ts",
+    "test:monitoring": "vitest run src/lib/calc/monitoring.test.ts src/lib/services/alerts.test.ts src/lib/agent/agent.monitoring.test.ts",
     "db:seed": "tsx scripts/seed.ts",
-    "agent:smoke": "tsx scripts/agent-smoke.ts"
+    "db:migrate:verify": "tsx scripts/migration-verify.ts",
+    "agent:smoke": "tsx scripts/agent-smoke-offline.ts",
+    "agent:smoke:live": "tsx scripts/agent-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",

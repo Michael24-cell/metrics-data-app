@@ -1,4 +1,4 @@
-import { currentFacility } from "@/lib/facility";
+import { authorizedContext } from "@/lib/facility";
 import { listImportBatches, listDataSources, listAthletes } from "@/lib/db/dal";
 import { METRICS } from "@/lib/config/metrics";
 import ImportClient from "./ImportClient";
@@ -6,7 +6,7 @@ import ImportClient from "./ImportClient";
 export const dynamic = "force-dynamic";
 
 export default async function ImportPage() {
-  const facility = await currentFacility();
+  const facility = (await authorizedContext("imports.write")).facility;
   const batches = listImportBatches(facility.id);
   const sources = listDataSources(facility.id);
   const athletes = listAthletes(facility.id).map((a) => ({ id: a.id, name: a.display_name }));

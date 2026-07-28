@@ -1,10 +1,11 @@
-import { currentFacility } from "@/lib/facility";
+import { authorizedContext } from "@/lib/facility";
 import { listAthletes } from "@/lib/db/dal";
 import { listAlerts, coachDigest } from "@/lib/services/alerts";
 import { listMonitoringResults } from "@/lib/services/monitoringEngine";
 import { effectivePolicy } from "@/lib/services/monitoringPolicy";
 import { METRICS } from "@/lib/config/metrics";
 import AlertActions from "./AlertActions";
+import { can } from "@/lib/auth/roles";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +34,9 @@ export default async function MonitoringPage({
   searchParams: Promise<Record<string, string | undefined>>;
 }) {
   const sp = await searchParams;
-  const facility = await currentFacility();
+  const auth = await authorizedContext("athletes.view");
+  const facility = auth.facility;
+  const canActOnAlerts = can(auth.role, "alerts.acknowledge");
   const athletes = listAthletes(facility.id, sp.team);
   const athleteName = new Map(athletes.map((a) => [a.id, a.display_name]));
 
@@ -141,7 +144,7 @@ export default async function MonitoringPage({
                   {a.close_reason && <div style={{ marginTop: 4, color: "var(--ink-mute)" }}>{a.status}: {a.close_reason}</div>}
                 </div>
                 <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <AlertActions alertId={a.id} status={a.status} />
+                  {canActOnAlerts && <AlertActions alertId={a.id} status={a.status} />}
                   <a href={`/agent?athlete=${a.athlete_id}&q=${encodeURIComponent("Why was this athlete surfaced for review?")}${def ? `&metric=${a.metric_key}` : ""}`} style={{ color: "var(--accent)", fontSize: 12.5 }}>
                     Ask the agent →
                   </a>

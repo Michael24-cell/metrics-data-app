@@ -1,5 +1,5 @@
 
-import { currentFacility } from "@/lib/facility";
+import { authorizedContext } from "@/lib/facility";
 import { listAthletes } from "@/lib/db/dal";
 import { effectivePolicy } from "@/lib/services/monitoringPolicy";
 import { STAT_POLICIES } from "@/lib/config/statPolicies";
@@ -19,7 +19,7 @@ export default async function MonitoringSettingsPage({
   searchParams: Promise<Record<string, string | undefined>>;
 }) {
   const sp = await searchParams;
-  const facility = await currentFacility();
+  const facility = (await authorizedContext("monitoring.configure")).facility;
   const athletes = listAthletes(facility.id);
   const athlete = athletes.find((a) => a.id === sp.athlete) ?? null;
 

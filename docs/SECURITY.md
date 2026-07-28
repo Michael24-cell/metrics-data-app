@@ -6,8 +6,9 @@ independent security review are still required (see "Still required" below).
 
 ## Authentication
 
-- In-repo session auth: scrypt (N=16384, per-user salt) password hashes;
-  256-bit opaque session tokens stored only as sha256; httpOnly, sameSite=lax
+- In-repo session auth: bounded, versioned scrypt parameters (N=16384, r=8,
+  p=1, per-user salt) and constant-work unknown-account verification;
+  256-bit opaque session tokens stored only as an HMAC-SHA256 digest in production; httpOnly, sameSite=lax
   cookies (secure in production); 7-day expiry; disabled users lose all
   sessions immediately.
 - Chosen because the stack (Next.js + node:sqlite) had no existing auth
@@ -15,9 +16,10 @@ independent security review are still required (see "Still required" below).
   sit behind the same `resolveContext()` helper without touching data access.
 - Activation is invitation-based (`invitation` table, hashed tokens, expiry,
   single-use). No self-serve registration.
-- Modes: `TRACELAB_AUTH_MODE=demo` (default; the pre-existing controlled demo,
-  synthetic admin context) vs `required` (full enforcement). Demo behavior is
-  never active when `required` is set.
+- Modes must be explicit outside tests. Production always requires
+  `TRACELAB_AUTH_MODE=required` and a 32+ character
+  `TRACELAB_SESSION_SECRET`; missing, misspelled, or demo configuration fails
+  closed. Demo mode is visibly labeled and forbidden in production.
 
 ## Tenancy and authorization
 
@@ -30,6 +32,9 @@ independent security review are still required (see "Still required" below).
 - All data access flows through the facility-scoped DAL; every new table
   (agent_run_record, audit_event, monitoring/alerts) carries facility_id and
   every reader takes facilityId first.
+- Browser mutations require an exact-host Origin and same-origin fetch
+  metadata. Facility-switch navigation rejects cross-site requests.
+- Authentication and privilege changes rotate/revoke existing sessions.
 
 ## Audit events
 
@@ -59,6 +64,10 @@ session tokens, password material, or unrestricted raw model prompts.
   physical deletion of athlete data cascades sessions → trials → metrics →
   findings → monitoring records. (Workflow surface is deliberately minimal in
   this phase; the capability, audit action, and scoping rules are in place.)
+
+Agent runs, reviews, feedback, monitoring results/settings, alerts/actions,
+and audit events are server-side records. Browser storage is a transient UI
+cache only.
 
 ## Still required before production (external to this repository)
 

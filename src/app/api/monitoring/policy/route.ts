@@ -5,6 +5,7 @@ import { savePolicyLayer, effectivePolicy } from "@/lib/services/monitoringPolic
 import { evaluateAthlete } from "@/lib/services/monitoringEngine";
 import { recordAudit } from "@/lib/audit";
 import { STAT_POLICIES } from "@/lib/config/statPolicies";
+import { sameOriginDenied } from "@/lib/requestSecurity";
 
 const Overrides = z
   .object({
@@ -27,6 +28,8 @@ const Body = z
   .strict();
 
 export async function POST(req: NextRequest) {
+  const originDenied = sameOriginDenied(req);
+  if (originDenied) return originDenied;
   const ctx = await apiContext("monitoring.configure");
   if (isDenied(ctx)) return ctx;
   const parsed = Body.safeParse(await req.json().catch(() => null));

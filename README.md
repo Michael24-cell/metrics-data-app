@@ -15,11 +15,14 @@ Requires Node ≥ 22.5 (uses the built-in `node:sqlite`).
 
 Optional live AI mode: `cp .env.example .env.local` and set `ANTHROPIC_API_KEY` (server-side only; git-ignored). Without a key the Intelligence Agent runs in deterministic scripted mode — the demo is fully functional offline. `npm run agent:smoke` is an optional manual live smoke test (one real model call; never run in CI).
 
-## Controlled demo mode — no authentication
+## Authentication modes
 
-This build has **no user login, no session identity, and no role-based access control**. Facility scoping is enforced at every database query (see `src/lib/db/dal.ts`), but *which* facility a visitor is scoped to is chosen by an unauthenticated cookie, guarded only by a confirmation interstitial (`src/app/api/facility/route.ts`) — a bare link can no longer silently switch facilities, but there is no login preventing anyone with the URL from doing so deliberately. A warning banner is shown on every page for the same reason.
-
-**Until real authentication is built, this app should only be shown by the founder, in a setting they control (screen-shared or on their own machine) — never deployed as a self-serve public link.** Treat every current facility/athlete as demo or synthetic content; see `docs/DATA_GOVERNANCE.md`.
+`TRACELAB_AUTH_MODE=required` uses invitation activation, scrypt passwords,
+opaque database sessions, memberships, and server-enforced roles. Production
+always requires this mode and a 32+ character `TRACELAB_SESSION_SECRET`.
+`TRACELAB_AUTH_MODE=demo` is an explicit local-development mode with a visible
+warning and synthetic admin context; it is forbidden in production. Treat
+every seeded athlete as synthetic; see `docs/DATA_GOVERNANCE.md`.
 
 ## The working loop
 
@@ -39,7 +42,7 @@ Three honestly-named AI modes:
 | `live` | Real Anthropic model tool-calling (server-side key, request timeouts, hard tool-step max, structured-output validation; any failure falls back safely to scripted — the page never crashes) |
 | `fixture` | Frozen test expectations used by the test suite |
 
-The Action & Evidence Trace shows tool calls, validated inputs, result summaries, evidence IDs, durations, and statuses — never model chain-of-thought. Runs and review records persist client-side (localStorage) because route handlers are stateless in this demo. Facility scoping of every agent tool is real (bound server-side at executor creation), but *which* facility is active remains the controlled-demo cookie described above — it is demo scoping, not production authentication or tenant isolation.
+The Action & Evidence Trace shows tool calls, validated inputs, result summaries, evidence IDs, durations, and statuses — never model chain-of-thought. Runs, review records, and feedback persist server-side and are tenant-scoped. Browser storage is only a transient recent-run cache.
 
 ## Status: operational / provisional / stubbed / blocked
 

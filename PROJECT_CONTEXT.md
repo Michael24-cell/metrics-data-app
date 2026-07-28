@@ -13,11 +13,14 @@ A force-plate + training analytics platform for strength coaches, with an additi
 - **Every claim is evidence-bound** — claims carry resolvable evidence references; a deterministic evaluation (schema, prohibited language, numeric fidelity, comparability, scope) gates what the UI shows.
 - **Server-only secrets** — `ANTHROPIC_API_KEY` is read from env server-side only; `.env*` is git-ignored; without a key the agent runs in deterministic scripted mode.
 - **Untrusted text stays data** — practitioner notes and import content are quoted, never followed as instructions.
-- **Controlled demo scoping, not auth** — every query is facility-scoped in the DAL and agent tools are athlete+facility-bound at creation, but the active facility comes from an unauthenticated cookie. This is demo scoping; there is no production authentication or tenant isolation yet. Founder-driven demos only.
+- **Fail-closed auth and tenancy** — production requires invitation/session
+  authentication; the active facility is selected only among server-side
+  memberships. Explicit local demo mode uses a visibly labeled synthetic admin
+  context and is forbidden in production.
 
 ## Agent modes (honest names)
 
-`fixture` = frozen test expectations · `scripted` = deterministic tool workflow over current synthetic data (keyless default; not a "replay") · `live` = real Anthropic model tool-calling with timeouts, step caps, structured-output validation, and safe fallback to scripted. Runs/reviews persist client-side (localStorage); route handlers are stateless; the original generated report is never mutated by an edit.
+`fixture` = frozen test expectations · `scripted` = deterministic tool workflow over current synthetic data (keyless default; not a "replay") · `live` = real Anthropic model tool-calling with timeouts, step caps, structured-output validation, and safe fallback to scripted. Runs/reviews/feedback persist server-side; the original generated report is never mutated by an edit.
 
 ## Key seams
 

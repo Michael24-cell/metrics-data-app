@@ -5,9 +5,8 @@
  * - Claim: one substantive statement + the evidence refs that ground it.
  * - GeneratedReport / AgentAnswer: the agent's only output shapes.
  * - ReviewRecord: human review state, stored SEPARATELY from generated
- *   output (the model never writes its own approval state). For this
- *   controlled demo, runs and reviews persist in the browser
- *   (localStorage) — route handlers stay stateless.
+ *   output (the model never writes its own approval state). Runs and reviews
+ *   are authoritative server-side records; the browser may cache run snapshots.
  */
 
 import { z } from "zod";
@@ -300,7 +299,7 @@ export interface ToolPlanV1 {
 }
 
 /* ------------------------------------------------------------------ */
-/* Human review (client-persisted; original output preserved)          */
+/* Human review (server-persisted; original output preserved)          */
 /* ------------------------------------------------------------------ */
 
 export const ReviewActionSchema = z.enum(["approve", "edit", "reject", "needs_more_data"]);

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { listFacilities } from "@/lib/db/dal";
 import { authMode, membershipsOf, sessionUser, SESSION_COOKIE } from "@/lib/auth/auth";
 import { recordAudit } from "@/lib/audit";
+import { navigationOriginDenied } from "@/lib/requestSecurity";
 
 /**
  * Facility switcher: sets the scope cookie and returns to the app.
@@ -14,6 +15,8 @@ import { recordAudit } from "@/lib/audit";
  * facility-scoped query logic (src/lib/facility.ts, the DAL) at all.
  */
 export async function GET(req: NextRequest) {
+  const navigationDenied = navigationOriginDenied(req);
+  if (navigationDenied) return navigationDenied;
   const id = req.nextUrl.searchParams.get("set");
   const confirmed = req.nextUrl.searchParams.get("confirm") === "1";
   const facilities = listFacilities();

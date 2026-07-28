@@ -1,7 +1,9 @@
-import { currentFacility } from "@/lib/facility";
+import { authorizedContext } from "@/lib/facility";
 import { listAthletes, getActiveProtocol, listMilestones } from "@/lib/db/dal";
 import { getDb } from "@/lib/db/db";
 import { runAgent, resolveMode } from "@/lib/agent/runner";
+import { saveAgentRunRecord } from "@/lib/agent/runs";
+import { listReviews } from "@/lib/agent/reviews";
 import AgentClient from "./AgentClient";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +21,7 @@ export default async function AgentPage({
   searchParams: Promise<Record<string, string | undefined>>;
 }) {
   const sp = await searchParams;
-  const facility = await currentFacility();
+  const facility = (await authorizedContext("agent.ask")).facility;
   const athletes = listAthletes(facility.id);
 
   // default: the athlete with the most recently created active staged plan, else first
@@ -46,6 +48,7 @@ export default async function AgentPage({
     athleteName: athlete.display_name,
     task: "report",
   });
+  saveAgentRunRecord(initialRun);
 
   const milestones = listMilestones(facility.id, athlete.id).map((m) => ({
     date: m.milestone_date,
@@ -64,6 +67,7 @@ export default async function AgentPage({
       lastTestDate={lastTest.d}
       checkpoints={milestones}
       initialRun={initialRun}
+      initialReviews={listReviews(facility.id, athlete.id)}
       configuredMode={resolveMode()}
       initialQuestionKey={sp.ask}
       initialFindingId={sp.finding}

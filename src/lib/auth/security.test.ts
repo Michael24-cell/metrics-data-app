@@ -10,6 +10,7 @@ import {
   addMembership,
   authenticate,
   authMode,
+  validateAuthConfiguration,
   createInvitation,
   createSession,
   createUser,
@@ -22,6 +23,10 @@ import {
 import { can } from "./roles";
 import { assertAthleteInFacility, AuthzError, selectActiveFacility, withIdempotency, rateLimit, AuthContext } from "../authz";
 import { getAgentRunRecord } from "../agent/runs";
+import { createReview, listReviews } from "../agent/reviews";
+import { NextRequest } from "next/server";
+import { navigationOriginDenied, sameOriginDenied } from "../requestSecurity";
+import { recordAudit } from "../audit";
 
 let facA: string; // Ridgeline
 let facB: string; // Harbor City
@@ -54,6 +59,18 @@ describe("authentication", () => {
     expect(sessionUser(token)?.id).toBe(u.id);
     // expired
     expect(sessionUser(token, Date.now() + SESSION_TTL_MS + 1000)).toBeNull();
+  });
+
+  it("stores only a digest and rotates prior sessions after authentication", () => {
+    const u = createUser(`rotate-${newId()}@t.demo`, "Rotate Test", "password-123");
+    const first = createSession(u.id);
+    const second = createSession(u.id);
+    expect(first).not.toBe(second);
+    expect(sessionUser(first)).toBeNull();
+    expect(sessionUser(second)?.id).toBe(u.id);
+    const stored = getDb().prepare(`SELECT id FROM user_session WHERE user_id = ?`).get(u.id) as { id: string };
+    expect(stored.id).not.toBe(second);
+    expect(stored.id).toHaveLength(64);
   });
 
   it("disabled users are denied and their sessions are destroyed", () => {
@@ -91,8 +108,19 @@ describe("authentication", () => {
     expect(acceptInvitation(token, "Late", "password-123", Date.now() + 2 * 86400000)).toBeNull();
   });
 
-  it("defaults to demo mode unless explicitly required", () => {
-    expect(authMode()).toBe("demo");
+  it("fails closed in production and requires an explicit non-test mode", () => {
+    expect(authMode({ NODE_ENV: "test" })).toBe("demo");
+    expect(authMode({ NODE_ENV: "development", TRACELAB_AUTH_MODE: "demo" })).toBe("demo");
+    expect(authMode({ NODE_ENV: "development", TRACELAB_AUTH_MODE: "required" })).toBe("required");
+    expect(() => authMode({ NODE_ENV: "development" })).toThrow(/explicitly/);
+    expect(() => authMode({ NODE_ENV: "production", TRACELAB_AUTH_MODE: "demo", TRACELAB_SESSION_SECRET: "x".repeat(32) })).toThrow(/forbidden/);
+    expect(() => validateAuthConfiguration({ NODE_ENV: "production", TRACELAB_AUTH_MODE: "required" })).toThrow(/SESSION_SECRET/);
+    expect(authMode({
+      NODE_ENV: "production",
+      TRACELAB_AUTH_MODE: "required",
+      TRACELAB_SESSION_SECRET: "x".repeat(32),
+    })).toBe("required");
+    expect(() => authMode({ NODE_ENV: "production", TRACELAB_AUTH_MODE: "requried" })).toThrow(/Invalid/);
   });
 });
 
@@ -125,6 +153,10 @@ describe("tenant isolation", () => {
       .run(runId, facA, athleteA, nowIso());
     expect(getAgentRunRecord(facA, runId)?.run_id).toBe(runId);
     expect(getAgentRunRecord(facB, runId)).toBeNull();
+    expect(createReview({ facilityId: facB, runId, userId: null, action: "approve" })).toBeNull();
+    expect(createReview({ facilityId: facA, runId, userId: null, action: "approve" })?.runId).toBe(runId);
+    expect(listReviews(facB, athleteA)).toHaveLength(0);
+    expect(listReviews(facA, athleteA).some((r) => r.runId === runId)).toBe(true);
   });
 });
 
@@ -182,11 +214,40 @@ describe("operational protections", () => {
   it("membership upsert changes the role without duplicating rows", () => {
     const u = createUser(`role-${newId()}@t.demo`, "Role Test", "password-123");
     addMembership(u.id, facA, "readonly");
+    const priorSession = createSession(u.id);
     addMembership(u.id, facA, "coach");
     const rows = getDb()
       .prepare(`SELECT role FROM facility_membership WHERE user_id = ? AND facility_id = ?`)
       .all(u.id, facA) as { role: string }[];
     expect(rows).toHaveLength(1);
     expect(rows[0].role).toBe("coach");
+    expect(sessionUser(priorSession)).toBeNull();
+  });
+
+  it("denies cross-origin mutation and facility-switch requests", async () => {
+    const same = new NextRequest("https://trace.test/api/alerts", {
+      method: "POST",
+      headers: { origin: "https://trace.test", "sec-fetch-site": "same-origin" },
+    });
+    expect(sameOriginDenied(same)).toBeNull();
+    const cross = new NextRequest("https://trace.test/api/alerts", {
+      method: "POST",
+      headers: { origin: "https://evil.test", "sec-fetch-site": "cross-site" },
+    });
+    expect((await sameOriginDenied(cross)!.json()).error).toMatch(/Cross-origin/);
+    const navigation = new NextRequest("https://trace.test/api/facility?set=f", {
+      headers: { "sec-fetch-site": "cross-site" },
+    });
+    expect(navigationOriginDenied(navigation)?.status).toBe(403);
+  });
+
+  it("keeps audit events append-only", () => {
+    const resourceId = `append-${newId()}`;
+    recordAudit({ facilityId: facA, action: "security.append_only_test", resourceType: "test", resourceId });
+    const row = getDb().prepare(
+      `SELECT id FROM audit_event WHERE facility_id = ? AND resource_id = ?`
+    ).get(facA, resourceId) as { id: string };
+    expect(() => getDb().prepare(`UPDATE audit_event SET outcome = 'error' WHERE id = ?`).run(row.id)).toThrow(/append-only/);
+    expect(() => getDb().prepare(`DELETE FROM audit_event WHERE id = ?`).run(row.id)).toThrow(/append-only/);
   });
 });

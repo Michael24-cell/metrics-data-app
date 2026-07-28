@@ -4,7 +4,8 @@
  * resolves to nothing, never to data.
  */
 
-import { getDb } from "../db/db";
+import { getDb, nowIso } from "../db/db";
+import type { AgentRun } from "./schemas";
 
 export interface AgentRunRecordRow {
   run_id: string;
@@ -17,6 +18,19 @@ export interface AgentRunRecordRow {
   mode: string;
   run_json: string;
   created_at: string;
+}
+
+export function saveAgentRunRecord(run: AgentRun, userId: string | null = null): void {
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO agent_run_record
+       (run_id, facility_id, athlete_id, user_id, task, question, eval_status, mode, run_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      run.runId, run.facilityId, run.athleteId, userId, run.task,
+      run.question ?? run.questionKey ?? null, run.eval.status, run.mode, JSON.stringify(run), nowIso()
+    );
 }
 
 export function getAgentRunRecord(facilityId: string, runId: string): AgentRunRecordRow | null {

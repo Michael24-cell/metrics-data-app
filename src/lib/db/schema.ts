@@ -333,6 +333,10 @@ CREATE TABLE IF NOT EXISTS audit_event (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_facility_time ON audit_event(facility_id, created_at);
+CREATE TRIGGER IF NOT EXISTS audit_event_append_only_update
+BEFORE UPDATE ON audit_event BEGIN SELECT RAISE(ABORT, 'audit_event is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS audit_event_append_only_delete
+BEFORE DELETE ON audit_event BEGIN SELECT RAISE(ABORT, 'audit_event is append-only'); END;
 
 CREATE TABLE IF NOT EXISTS agent_run_record (
   run_id TEXT PRIMARY KEY,
@@ -347,6 +351,18 @@ CREATE TABLE IF NOT EXISTS agent_run_record (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_agent_run_facility ON agent_run_record(facility_id, athlete_id, created_at);
+
+CREATE TABLE IF NOT EXISTS agent_review (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  run_id TEXT NOT NULL REFERENCES agent_run_record(run_id),
+  user_id TEXT,
+  action TEXT NOT NULL,                          -- approve | edit | reject | needs_more_data
+  reason TEXT,
+  revised_summary TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_review_run ON agent_review(facility_id, run_id, created_at);
 
 CREATE TABLE IF NOT EXISTS agent_feedback (
   id TEXT PRIMARY KEY,

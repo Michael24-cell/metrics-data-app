@@ -201,18 +201,25 @@ export function generateAlertsForAthlete(facilityId: string, athleteId: string, 
 }
 
 /** Idempotent facility-wide monitoring job (queue/scheduler boundary). */
-export function runMonitoringJob(facilityId: string, triggeredBy?: string | null): { athletes: number; alertsCreated: number } {
+export function runMonitoringJob(
+  facilityId: string,
+  triggeredBy?: string | null
+): { athletes: number; alertsCreated: number; failures: number } {
   const athletes = listAthletes(facilityId);
   let alertsCreated = 0;
+  let failures = 0;
   for (const a of athletes) {
     try {
       alertsCreated += generateAlertsForAthlete(facilityId, a.id);
     } catch {
-      /* one athlete's failure never blocks the job; error-monitoring hook point */
+      failures += 1;
     }
   }
-  recordAudit({ facilityId, userId: triggeredBy ?? null, action: "monitoring.job_run", outcome: "ok", metadata: { athletes: athletes.length, alertsCreated } });
-  return { athletes: athletes.length, alertsCreated };
+  recordAudit({
+    facilityId, userId: triggeredBy ?? null, action: "monitoring.job_run",
+    outcome: failures ? "error" : "ok", metadata: { athletes: athletes.length, alertsCreated, failures },
+  });
+  return { athletes: athletes.length, alertsCreated, failures };
 }
 
 /* ---------------- lifecycle ---------------- */
@@ -247,15 +254,26 @@ export function transitionAlert(
   const now = nowIso();
   if (action === "acknowledge") {
     if (alert.status !== "new") return { error: `Cannot acknowledge an alert in status '${alert.status}'.` };
-    db.prepare(`UPDATE alert SET status = 'acknowledged', acknowledged_by = ?, acknowledged_at = ? WHERE id = ?`).run(userId, now, alertId);
+    const changed = db.prepare(
+      `UPDATE alert SET status = 'acknowledged', acknowledged_by = ?, acknowledged_at = ?
+       WHERE facility_id = ? AND id = ? AND status = 'new'`
+    ).run(userId, now, facilityId, alertId);
+    if (!changed.changes) return { error: "Alert changed before this acknowledgement; refresh and retry." };
   } else if (action === "resolve" || action === "dismiss") {
     if (alert.status === "resolved" || alert.status === "dismissed") return { error: `Alert already ${alert.status}.` };
     if (action === "dismiss" && !opts.reason) return { error: "Dismissal requires a reason." };
-    db.prepare(`UPDATE alert SET status = ?, closed_by = ?, closed_at = ?, close_reason = ? WHERE id = ?`).run(
-      action === "resolve" ? "resolved" : "dismissed", userId, now, opts.reason ?? null, alertId
+    const changed = db.prepare(
+      `UPDATE alert SET status = ?, closed_by = ?, closed_at = ?, close_reason = ?
+       WHERE facility_id = ? AND id = ? AND status NOT IN ('resolved', 'dismissed')`
+    ).run(
+      action === "resolve" ? "resolved" : "dismissed", userId, now, opts.reason ?? null, facilityId, alertId
     );
+    if (!changed.changes) return { error: "Alert changed before this transition; refresh and retry." };
   } else if (action === "note") {
-    db.prepare(`UPDATE alert SET coach_note = ? WHERE id = ?`).run(opts.note ?? null, alertId);
+    const changed = db.prepare(`UPDATE alert SET coach_note = ? WHERE facility_id = ? AND id = ?`).run(
+      opts.note ?? null, facilityId, alertId
+    );
+    if (!changed.changes) return { error: "Alert not found in the authorized facility." };
   }
   recordAudit({
     facilityId, userId, action: `alert.${action}`, resourceType: "alert", resourceId: alertId,

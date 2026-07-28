@@ -4,12 +4,15 @@ import { apiContext, isDenied } from "@/lib/authz";
 import { getAgentRunRecord } from "@/lib/agent/runs";
 import { getDb, newId, nowIso } from "@/lib/db/db";
 import { recordAudit } from "@/lib/audit";
+import { sameOriginDenied } from "@/lib/requestSecurity";
 
 const RATINGS = ["helpful", "not_what_i_asked", "wrong_context", "too_technical", "missing_option"] as const;
 const Body = z.object({ runId: z.string().min(4).max(80), rating: z.enum(RATINGS) }).strict();
 
 /** Structured feedback on one agent answer — tenancy-scoped, duplicate-safe. */
 export async function POST(req: NextRequest) {
+  const originDenied = sameOriginDenied(req);
+  if (originDenied) return originDenied;
   const ctx = await apiContext("agent.ask");
   if (isDenied(ctx)) return ctx;
   const parsed = Body.safeParse(await req.json().catch(() => null));

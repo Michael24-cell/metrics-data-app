@@ -1,21 +1,22 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import type { Role } from "@/lib/auth/roles";
 
 const LINKS = [
-  { href: "/", label: "Roster" },
-  { href: "/monitoring", label: "Monitoring" },
-  { href: "/agent", label: "Intelligence Agent" },
-  { href: "/import", label: "Imports" },
-  { href: "/story", label: "Case Study" },
-  { href: "/docs", label: "Methodology & Docs" },
+  { href: "/", label: "Roster", roles: ["admin", "coach", "analyst", "readonly"] },
+  { href: "/monitoring", label: "Monitoring", roles: ["admin", "coach", "analyst", "readonly"] },
+  { href: "/agent", label: "Intelligence Agent", roles: ["admin", "coach", "analyst"] },
+  { href: "/import", label: "Imports", roles: ["admin"] },
+  { href: "/story", label: "Case Study", roles: ["admin", "coach", "analyst", "readonly"] },
+  { href: "/docs", label: "Methodology & Docs", roles: ["admin", "coach", "analyst", "readonly"] },
 ];
 
-export default function NavLinks() {
+export default function NavLinks({ role }: { role: Role }) {
   const pathname = usePathname();
   return (
     <nav className="appnav">
-      {LINKS.map((l) => (
+      {LINKS.filter((l) => l.roles.includes(role)).map((l) => (
         <a
           key={l.href}
           href={l.href}

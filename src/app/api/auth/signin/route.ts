@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { authenticate, createSession, SESSION_COOKIE, SESSION_TTL_MS } from "@/lib/auth/auth";
+import { authenticate, authMode, createSession, SESSION_COOKIE, SESSION_TTL_MS } from "@/lib/auth/auth";
 import { rateLimit } from "@/lib/authz";
 import { recordAudit } from "@/lib/audit";
+import { sameOriginDenied } from "@/lib/requestSecurity";
 
 const Body = z.object({ email: z.string().email().max(200), password: z.string().min(8).max(200) }).strict();
 
 export async function POST(req: NextRequest) {
+  authMode(); // validates the fail-closed deployment contract on direct API access
+  const originDenied = sameOriginDenied(req);
+  if (originDenied) return originDenied;
   const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
   if (!rateLimit(`signin:${ip}`, 10)) {
     return NextResponse.json({ error: "Too many sign-in attempts — try again in a minute." }, { status: 429 });

@@ -3,6 +3,8 @@ import { currentFacility } from "@/lib/facility";
 import { listImportBatches, listDataSources } from "@/lib/db/dal";
 import { csvGenericAdapter, manualEntryAdapter, runImportBatch } from "@/lib/pipeline/adapters";
 import { CsvInput, ManualInput } from "@/lib/pipeline/adapters";
+import { apiContext, isDenied } from "@/lib/authz";
+import { sameOriginDenied } from "@/lib/requestSecurity";
 
 export async function GET() {
   const facility = await currentFacility();
@@ -16,12 +18,19 @@ export async function GET() {
  *       { adapter: "csv_generic", input: CsvInput, dryRun: true }  → inspect+validate only
  */
 export async function POST(req: NextRequest) {
-  const facility = await currentFacility();
-  const body = (await req.json()) as {
+  const originDenied = sameOriginDenied(req);
+  if (originDenied) return originDenied;
+  const ctx = await apiContext("imports.write");
+  if (isDenied(ctx)) return ctx;
+  const facility = ctx.facility;
+  const body = (await req.json().catch(() => null)) as {
     adapter: string;
     input: CsvInput | ManualInput;
     dryRun?: boolean;
-  };
+  } | null;
+  if (!body || typeof body.adapter !== "string" || !body.input) {
+    return NextResponse.json({ error: "adapter and input are required." }, { status: 400 });
+  }
 
   const adapter =
     body.adapter === "csv_generic" ? csvGenericAdapter : body.adapter === "manual_entry" ? manualEntryAdapter : null;

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { apiContext, isDenied, withIdempotency } from "@/lib/authz";
 import { listAlerts, transitionAlert, AlertStatus } from "@/lib/services/alerts";
+import { sameOriginDenied } from "@/lib/requestSecurity";
 
 export async function GET(req: NextRequest) {
   const ctx = await apiContext("athletes.view");
@@ -26,6 +27,8 @@ const Body = z
   .strict();
 
 export async function POST(req: NextRequest) {
+  const originDenied = sameOriginDenied(req);
+  if (originDenied) return originDenied;
   const ctx = await apiContext("alerts.acknowledge"); // read-only + analyst are denied here
   if (isDenied(ctx)) return ctx;
   const parsed = Body.safeParse(await req.json().catch(() => null));

@@ -82,18 +82,27 @@ export function savePolicyLayer(
 ): PolicyLayer {
   const db = getDb();
   const target = scope === "coach" ? opts.coachUserId : scope === "athlete" ? opts.athleteId : undefined;
-  const prev = activeRow(facilityId, scope, target);
-  const version = (prev?.version ?? 0) + 1;
-  if (prev) db.prepare(`UPDATE monitoring_policy SET active = 0 WHERE id = ?`).run(prev.id);
-  db.prepare(
-    `INSERT INTO monitoring_policy (id, facility_id, scope, coach_user_id, athlete_id, version, config_json, created_by, active, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
-  ).run(
-    newId(), facilityId, scope,
-    scope === "coach" ? (opts.coachUserId ?? null) : null,
-    scope === "athlete" ? (opts.athleteId ?? null) : null,
-    version, JSON.stringify(overrides), opts.createdBy ?? null, nowIso()
-  );
+  if (scope !== "facility" && !target) throw new Error(`${scope} policy requires a target.`);
+  let version = 0;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const prev = activeRow(facilityId, scope, target);
+    version = (prev?.version ?? 0) + 1;
+    if (prev) db.prepare(`UPDATE monitoring_policy SET active = 0 WHERE facility_id = ? AND id = ?`).run(facilityId, prev.id);
+    db.prepare(
+      `INSERT INTO monitoring_policy (id, facility_id, scope, coach_user_id, athlete_id, version, config_json, created_by, active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+    ).run(
+      newId(), facilityId, scope,
+      scope === "coach" ? (opts.coachUserId ?? null) : null,
+      scope === "athlete" ? (opts.athleteId ?? null) : null,
+      version, JSON.stringify(overrides), opts.createdBy ?? null, nowIso()
+    );
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
   return { scope, version, overrides };
 }
 

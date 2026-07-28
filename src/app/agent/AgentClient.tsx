@@ -4,8 +4,8 @@
  * Athlete intelligence — trainer-facing product surface.
  *
  * Presentation layer only: renders the validated AgentRun structures.
- * Run + review persistence lives HERE (localStorage), not in the server
- * process: route handlers return complete run snapshots and stay stateless.
+ * The server is authoritative for runs and reviews. localStorage retains
+ * recent run snapshots only as a transient UI cache.
  * The original generated report is never mutated — reviewer edits create a
  * ReviewRecord carrying the revised text alongside the preserved original.
  *
@@ -40,6 +40,7 @@ interface Props {
   lastTestDate: string | null;
   checkpoints: { date: string; label: string }[];
   initialRun: AgentRun;
+  initialReviews: ReviewRecord[];
   configuredMode: string;
   initialQuestionKey?: string;
   initialFindingId?: string;
@@ -67,7 +68,6 @@ const VIEWS: { key: View; label: string }[] = [
 ];
 
 const runsKey = (f: string, a: string) => `tracelab:agent:runs:${f}:${a}`;
-const reviewsKey = (f: string) => `tracelab:agent:reviews:${f}`;
 
 const load = <T,>(key: string, fallback: T): T => {
   try {
@@ -292,7 +292,7 @@ export default function AgentClient(props: Props) {
   const viewRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const sheetRef = useRef<HTMLDivElement | null>(null);
 
-  /* hydrate persisted runs/reviews, then merge the fresh server run */
+  /* hydrate the transient run cache; reviews come from the server */
   useEffect(() => {
     const stored = load<AgentRun[]>(runsKey(facility.id, athlete.id), []);
     const merged = stored.some((r) => r.runId === props.initialRun.runId)
@@ -301,7 +301,7 @@ export default function AgentClient(props: Props) {
     setRuns(merged);
     setReportId(props.initialRun.runId);
     save(runsKey(facility.id, athlete.id), merged);
-    setReviews(load<ReviewRecord[]>(reviewsKey(facility.id), []));
+    setReviews(props.initialReviews);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [athlete.id, props.initialRun.runId]);
 
@@ -453,26 +453,30 @@ export default function AgentClient(props: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [sheetOpen]);
 
-  const saveReview = (action: ReviewAction) => {
+  const saveReview = async (action: ReviewAction) => {
     if (!reportRun?.report) return;
     const revised = action === "edit" ? editText : undefined;
-    const record: ReviewRecord = {
-      reviewId: `rev_${Math.random().toString(36).slice(2, 10)}`,
-      runId: reportRun.runId,
-      originalReportId: reportRun.report.reportId,
-      action,
-      reviewer: "Coach (demo session)",
-      reason: reviewNote || undefined,
-      revisedExecutiveSummary: revised,
-      revisedReportId: revised ? `${reportRun.report.reportId}-rev${reportReviews.length + 1}` : undefined,
-      timestamp: new Date().toISOString(),
-    };
-    const next = [...reviews, record];
-    setReviews(next);
-    save(reviewsKey(facility.id), next);
-    setPendingAction(null);
-    setReviewNote("");
-    setEditText("");
+    setBusy("review");
+    setError(null);
+    try {
+      const res = await fetch("/api/agent/reviews", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          runId: reportRun.runId, action, reason: reviewNote || undefined, revisedSummary: revised,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+      setReviews((current) => [...current, json as ReviewRecord]);
+      setPendingAction(null);
+      setReviewNote("");
+      setEditText("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
   };
 
   const openEvidenceDetail = async (ref: EvidenceRef) => {

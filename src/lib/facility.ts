@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
-import { AuthzError, resolveContext } from "./authz";
+import { assertCan, AuthzError, resolveContext } from "./authz";
+import type { Capability } from "./auth/roles";
 
 /**
  * Resolves the AUTHORIZED active facility for the request.
@@ -14,11 +15,16 @@ import { AuthzError, resolveContext } from "./authz";
  * /signin. API routes use authz.apiContext(), which returns 401/403 JSON.
  */
 export async function currentFacility() {
+  return (await authorizedContext()).facility;
+}
+
+export async function authorizedContext(capability?: Capability) {
   try {
     const ctx = await resolveContext();
-    return ctx.facility;
+    if (capability) assertCan(ctx, capability);
+    return ctx;
   } catch (e) {
-    if (e instanceof AuthzError) redirect("/signin");
+    if (e instanceof AuthzError) redirect(e.status === 401 ? "/signin" : "/");
     throw e;
   }
 }

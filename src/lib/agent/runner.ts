@@ -6,9 +6,9 @@
  *   3. deterministic post-generation evaluation (pass/warn/fail)
  *   4. human review — happens in the UI; the model never writes approval
  *
- * The route handler returns the COMPLETE AgentRun snapshot; persistence of
- * runs and ReviewRecords is client-side (localStorage) because Next.js
- * route handlers may restart or run in separate instances.
+ * The route handler returns the COMPLETE AgentRun snapshot. The server-side
+ * route/page boundary persists runs and reviews; browser storage is a
+ * transient UI cache.
  */
 
 import { createHash, randomUUID } from "node:crypto";

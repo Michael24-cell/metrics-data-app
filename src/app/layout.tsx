@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import { Archivo, Barlow_Condensed, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { listFacilities } from "@/lib/db/dal";
-import { currentFacility } from "@/lib/facility";
 import NavLinks from "@/components/NavLinks";
+import SignOutButton from "@/components/SignOutButton";
+import { authMode } from "@/lib/auth/auth";
+import { AuthzError, resolveContext } from "@/lib/authz";
 
 const body = Archivo({ subsets: ["latin"], variable: "--font-body", weight: ["400", "500", "600"] });
 const display = Barlow_Condensed({ subsets: ["latin"], variable: "--font-display", weight: ["500", "600", "700"] });
@@ -17,15 +19,31 @@ export const metadata: Metadata = {
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const facilities = listFacilities();
-  const facility = await currentFacility();
+  const mode = authMode();
+  let context = null;
+  try {
+    context = await resolveContext();
+  } catch (error) {
+    if (!(error instanceof AuthzError)) throw error;
+  }
+  const visibleFacilities = context?.mode === "required"
+    ? facilities.filter((f) => context.memberships.some((m) => m.facility_id === f.id))
+    : facilities;
 
   return (
     <html lang="en" className={`${body.variable} ${display.variable} ${mono.variable}`}>
       <body>
-        <div className="demo-banner" role="note">
-          <strong>Controlled demo</strong> — no user authentication is implemented. Intended for
-          founder-led demos only; do not share this link or leave a session unattended.
-        </div>
+        {mode === "demo" ? (
+          <div className="demo-banner" role="note">
+            <strong>Controlled demo — authentication disabled</strong>. Synthetic data only; never use this
+            configuration for a production deployment.
+          </div>
+        ) : (
+          <div className="demo-banner" role="note">
+            <strong>Authenticated workspace</strong>
+            {context?.user ? ` — signed in as ${context.user.display_name} (${context.role})` : " — sign in required"}
+          </div>
+        )}
         <header className="appbar">
           <a href="/" className="brand" aria-label="TraceLab home">
             <svg width="26" height="18" viewBox="0 0 26 18" aria-hidden="true">
@@ -40,15 +58,20 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             </svg>
             TRACE<em>LAB</em>
           </a>
-          <NavLinks />
-          <div className="facility-switch">
-            <span>Facility</span>
-            {facilities.map((f) => (
-              <a key={f.id} href={`/api/facility?set=${f.id}`} data-active={f.id === facility.id}>
-                {f.short_name}
-              </a>
-            ))}
-          </div>
+          {context ? (
+            <>
+              <NavLinks role={context.role} />
+              <div className="facility-switch">
+                <span>Facility</span>
+                {visibleFacilities.map((f) => (
+                  <a key={f.id} href={`/api/facility?set=${f.id}`} data-active={f.id === context.facility.id}>
+                    {f.short_name}
+                  </a>
+                ))}
+                {context.mode === "required" && <SignOutButton />}
+              </div>
+            </>
+          ) : <span style={{ marginLeft: "auto", color: "var(--ink-mute)", fontSize: 12 }}>Secure access</span>}
         </header>
         {children}
       </body>
