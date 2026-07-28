@@ -68,6 +68,28 @@ CREATE TABLE IF NOT EXISTS import_batch (
 );
 CREATE INDEX IF NOT EXISTS idx_batch_facility ON import_batch(facility_id);
 
+/* ======== immutable built-in test protocol catalog (Milestone A) ======== */
+
+CREATE TABLE IF NOT EXISTS test_protocol_definition (
+  id TEXT PRIMARY KEY,                           -- stable system identity, e.g. tracelab.cmj
+  test_type TEXT NOT NULL UNIQUE,                -- current application test_type key
+  label TEXT NOT NULL,
+  scope TEXT NOT NULL,                           -- system (facility-authored protocols are future work)
+  status TEXT NOT NULL,                          -- published
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS test_protocol_version (
+  id TEXT PRIMARY KEY,                           -- protocol_id@version
+  protocol_id TEXT NOT NULL REFERENCES test_protocol_definition(id),
+  version INTEGER NOT NULL,
+  calculation_version TEXT NOT NULL,
+  contract_json TEXT NOT NULL,                   -- immutable capability snapshot
+  contract_hash TEXT NOT NULL,
+  published_at TEXT NOT NULL,
+  UNIQUE(protocol_id, version)
+);
+
 CREATE TABLE IF NOT EXISTS permission_record (
   id TEXT PRIMARY KEY,
   facility_id TEXT NOT NULL REFERENCES facility(id),
@@ -86,6 +108,11 @@ CREATE TABLE IF NOT EXISTS session (
   device_id TEXT REFERENCES device(id),
   import_batch_id TEXT REFERENCES import_batch(id),
   test_type TEXT NOT NULL,                       -- config-driven key
+  protocol_id TEXT,                              -- built-in protocol identity; null for protocols not implemented in Milestone A
+  protocol_version INTEGER,
+  calculation_version TEXT,
+  setup_variant TEXT,
+  setup_metadata_json TEXT,
   session_date TEXT NOT NULL,                    -- ISO date
   notes TEXT,
   created_at TEXT NOT NULL
@@ -97,6 +124,10 @@ CREATE TABLE IF NOT EXISTS trial (
   facility_id TEXT NOT NULL REFERENCES facility(id),
   session_id TEXT NOT NULL REFERENCES session(id),
   trial_number INTEGER NOT NULL,
+  protocol_id TEXT,
+  protocol_version INTEGER,
+  calculation_version TEXT,
+  setup_variant TEXT,
   raw_meta_json TEXT,                            -- adapter-specific raw metadata
   waveform_json TEXT,                            -- downsampled display waveform {hz, force, left?, right?}
   event_markers_json TEXT,                       -- full-rate-derived alignment markers {kind, methodVersion, ...msFields}; NULL for trials predating this contract or test types with no defined events — never backfilled
@@ -112,6 +143,10 @@ CREATE TABLE IF NOT EXISTS metric (
   session_id TEXT NOT NULL REFERENCES session(id),
   trial_id TEXT REFERENCES trial(id),            -- null for session-level / derived metrics
   metric_type TEXT NOT NULL,                     -- key into metric registry
+  protocol_id TEXT,
+  protocol_version INTEGER,
+  calculation_version TEXT,
+  setup_variant TEXT,
   side TEXT NOT NULL DEFAULT 'bilateral',        -- left | right | bilateral
   value REAL NOT NULL,
   unit TEXT NOT NULL,

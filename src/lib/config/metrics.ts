@@ -12,6 +12,8 @@
  * DERIVED from per-metric flags below — see `ASYMMETRY_SOURCE_METRICS`.
  */
 
+import { CMJ_PROTOCOL_V1, IMTP_PROTOCOL_V1 } from "../protocols/registry";
+
 export type MetricSide = "left" | "right" | "bilateral";
 export type MetricVisibility = "primary" | "advanced";
 
@@ -484,8 +486,18 @@ export interface TestTypeDef {
 }
 
 export const TEST_TYPES: Record<string, TestTypeDef> = {
-  cmj: { key: "cmj", label: "Countermovement Jump", defaultMetric: "cmj_jump_height", curveEligible: true },
-  imtp: { key: "imtp", label: "Isometric Mid-Thigh Pull", defaultMetric: "imtp_peak_force", curveEligible: true },
+  cmj: {
+    key: CMJ_PROTOCOL_V1.testType,
+    label: CMJ_PROTOCOL_V1.label,
+    defaultMetric: "cmj_jump_height",
+    curveEligible: CMJ_PROTOCOL_V1.capabilities.visualization.forceTimeCurve,
+  },
+  imtp: {
+    key: IMTP_PROTOCOL_V1.testType,
+    label: IMTP_PROTOCOL_V1.label,
+    defaultMetric: "imtp_peak_force",
+    curveEligible: IMTP_PROTOCOL_V1.capabilities.visualization.forceTimeCurve,
+  },
   drop_jump: { key: "drop_jump", label: "Drop Jump", defaultMetric: "dj_rsi", curveEligible: false },
   vbt: { key: "vbt", label: "Velocity-Based Training", defaultMetric: "lv_mean_velocity", curveEligible: false },
   fv_profile: { key: "fv_profile", label: "Force–Velocity Profile", defaultMetric: "fv_profile_slope", curveEligible: false },

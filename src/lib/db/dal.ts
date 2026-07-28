@@ -28,6 +28,11 @@ export interface SessionRow {
   device_id: string | null;
   import_batch_id: string | null;
   test_type: string;
+  protocol_id: string | null;
+  protocol_version: number | null;
+  calculation_version: string | null;
+  setup_variant: string | null;
+  setup_metadata_json: string | null;
   session_date: string;
   notes: string | null;
 }
@@ -38,6 +43,10 @@ export interface MetricRow {
   session_id: string;
   trial_id: string | null;
   metric_type: string;
+  protocol_id: string | null;
+  protocol_version: number | null;
+  calculation_version: string | null;
+  setup_variant: string | null;
   side: string;
   value: number;
   unit: string;
@@ -64,6 +73,10 @@ export interface TrialRow {
   id: string;
   session_id: string;
   trial_number: number;
+  protocol_id: string | null;
+  protocol_version: number | null;
+  calculation_version: string | null;
+  setup_variant: string | null;
   waveform_json: string | null;
   event_markers_json: string | null;
   quality_flag: string | null;

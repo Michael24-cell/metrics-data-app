@@ -1,7 +1,80 @@
-# Test Protocol Platform — future design
+# Test Protocol Platform
 
-Status: design only. This document does not authorize implementation or claim
-that protocol execution is available in the current product.
+Status: **Protocol Milestone A implemented for existing CMJ and IMTP behavior.**
+Facility-authored protocols, assignments, execution workflows, reviews, and
+additional test types remain future design.
+
+## Implemented in Milestone A
+
+The application now has a small immutable protocol kernel for:
+
+- `tracelab.cmj@1` — existing Countermovement Jump calculation version
+  `1.0.0`.
+- `tracelab.imtp@1` — existing Isometric Mid-Thigh Pull calculation version
+  `1.0.0`.
+
+The runtime contract is defined in `src/lib/protocols/registry.ts`. It declares:
+
+- stable protocol identity and version;
+- the required total vertical-force channel in N;
+- optional paired left/right force channels in N;
+- a required positive finite sample rate;
+- required athlete identity and ISO session date;
+- the single existing `standard` setup variant (no new setup assumptions);
+- existing calculator-owned attempt validation and quality capabilities;
+- official metrics and existing event-marker fields;
+- force-time visualization, monitoring, team-analysis, Agent, and raw
+  reprocessing capability;
+- the exact existing calculation version.
+
+`src/lib/protocols/persistence.ts` installs and verifies the immutable catalog
+in `test_protocol_definition` and `test_protocol_version`. Protocol and
+calculation lineage is persisted on CMJ/IMTP sessions, trials, and metrics.
+Existing rows are additively backfilled from their established `test_type` and
+metric method version. Setup metadata is left empty instead of invented.
+
+The pipeline resolves CMJ and IMTP through this contract before invoking the
+unchanged functions in `src/lib/calc/cmj.ts`, `src/lib/calc/imtp.ts`, and
+`src/lib/calc/curve.ts`. Golden-master tests prove the wrapper returns the
+same results and event markers.
+
+Milestone A does **not** add or authorize Squat Jump, Drop Jump, 10–5 RJT,
+Isometric Squat, Loaded CMJ, DSI, or any other protocol. Existing Drop Jump
+code remains outside this protocol kernel and is not represented as a
+published protocol.
+
+## Milestone A implementation map
+
+| Boundary | Implementation |
+| --- | --- |
+| Immutable contract and discovery | `src/lib/protocols/registry.ts` |
+| Catalog persistence and legacy lineage | `src/lib/protocols/persistence.ts` |
+| Schema and additive migration hook | `src/lib/db/schema.ts`, `src/lib/db/db.ts` |
+| Ingestion selection and required-input enforcement | `src/lib/pipeline/adapter.ts`, `src/lib/pipeline/adapters.ts` |
+| Official calculation dispatch and metric lineage | `src/lib/pipeline/compute.ts` |
+| Application test labels/curve capability | `src/lib/config/metrics.ts` |
+| Golden masters, replay, capability, validation, and persistence | `src/lib/protocols/protocols.test.ts` |
+| Migration/backfill verification | `scripts/migration-verify.ts` |
+
+Hard-coded CMJ/IMTP dispatch was removed from the official calculation
+pipeline and replaced by protocol discovery. Test labels and curve
+availability now read the protocol contract.
+
+Formula-specific metric persistence remains explicit in
+`src/lib/pipeline/compute.ts`. This is intentional: it is the smallest clear
+adapter from the typed result objects to the existing metric schema, and
+turning it into a generic rules engine would obscure the approved behavior.
+CMJ/IMTP event algorithms, thresholds, warnings, and formula implementations
+remain hard-coded in their validated calculator modules for the same reason.
+Curve annotations retain explicit CMJ/IMTP typing because the two marker
+shapes are intentionally different.
+
+## Milestone A lifecycle
+
+The two built-in versions are system-scoped, published, and immutable. There
+is no UI or API for editing them. A scientific or calculation change requires
+a new explicit protocol version and calculation version; an existing catalog
+hash mismatch fails closed during database initialization.
 
 ## Purpose
 
@@ -10,7 +83,7 @@ define test protocols, assign them to athletes or teams, capture execution
 context, validate comparable observations, and hand accepted results to the
 existing deterministic calculation and monitoring systems.
 
-## Domain model
+## Future domain model
 
 - `protocol_definition`: facility-owned stable identity and lifecycle.
 - `protocol_version`: immutable ordered steps, instructions, equipment,
@@ -24,11 +97,12 @@ existing deterministic calculation and monitoring systems.
 - `protocol_review`: append-only accept/reject/amend decision; amendments
   create a new result version and never overwrite accepted history.
 
-Every athlete-bearing row carries `facility_id`; foreign keys and service
+These facility-authored entities are not implemented by Milestone A. When
+implemented, every athlete-bearing row must carry `facility_id`; foreign keys and service
 queries validate the facility, athlete, assignment, execution, and child row
 together. Browser-provided facility IDs are never authoritative.
 
-## Lifecycle
+## Future lifecycle
 
 `draft → reviewed → published → retired`. Published versions are immutable.
 Assignments reference a published version. Executions progress
@@ -36,7 +110,7 @@ Assignments reference a published version. Executions progress
 enter analytics. Interrupted work is resumable through idempotent,
 server-issued submission keys.
 
-## Authorization
+## Future authorization
 
 - Admin: create, review, publish, retire, assign, and inspect audit history.
 - Coach: assign published protocols, execute, submit, and review where granted.
@@ -56,7 +130,7 @@ observations. MDC requires valid TE and a configured confidence level. A
 protocol cannot silently introduce a universal SWC method. Historical results
 retain the exact protocol, calculation, and monitoring-policy versions.
 
-## API outline
+## Future API outline
 
 - Read definitions/versions/assignments through tenant-scoped services.
 - Create drafts and publish with `If-Match`/version checks.
@@ -65,7 +139,7 @@ retain the exact protocol, calculation, and monitoring-policy versions.
 - Accept/reject through append-only review records.
 - Export only accepted data through `exports.create`, with audit events.
 
-## Rollout gates
+## Future rollout gates
 
 1. Schema migration and rollback/restore rehearsal.
 2. Service-level tenant and child-parent isolation tests.

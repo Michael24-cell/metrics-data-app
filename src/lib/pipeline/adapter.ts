@@ -30,6 +30,11 @@ export interface InspectReport {
 export interface CanonicalSession {
   athleteId: string;
   testType: string; // key into TEST_TYPES
+  /** Optional explicit selection; CMJ/IMTP default to the current published built-in version. */
+  protocolId?: string;
+  protocolVersion?: number;
+  setupVariant?: string;
+  setupMetadata?: Record<string, unknown>;
   sessionDate: string; // ISO date
   deviceId?: string;
   notes?: string;

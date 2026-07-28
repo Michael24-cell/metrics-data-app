@@ -23,6 +23,11 @@ import { computeTrialMetrics, computeSessionAsymmetry, insertMetric } from "./co
 import { downsample } from "../calc/synthetic";
 import { regenerateFindings } from "../findings/engine";
 import { ForceTimeSeries } from "../calc/signal";
+import {
+  protocolForTestType,
+  validateProtocolAttempt,
+  validateProtocolSession,
+} from "../protocols/registry";
 
 /* ------------------------------------------------------------------ */
 /* Shared canonical stages                                             */
@@ -37,6 +42,31 @@ export function validateCanonical(payload: CanonicalPayload, facilityId: string)
     }
     if (!TEST_TYPES[s.testType]) errors.push(`Unknown test type '${s.testType}'.`);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(s.sessionDate)) errors.push(`Bad session date '${s.sessionDate}'.`);
+    const protocol = protocolForTestType(s.testType);
+    if (protocol) {
+      if (s.protocolId && s.protocolId !== protocol.id) {
+        errors.push(
+          `Protocol '${s.protocolId}' does not match test type '${s.testType}' (${protocol.id} required).`
+        );
+      }
+      if (s.protocolVersion != null && s.protocolVersion !== protocol.version) {
+        errors.push(
+          `Protocol version ${s.protocolVersion} is not registered for '${s.testType}' (${protocol.version} required).`
+        );
+      }
+      errors.push(
+        ...validateProtocolSession(protocol, {
+          athleteId: s.athleteId,
+          sessionDate: s.sessionDate,
+          setupVariant: s.setupVariant,
+          setupMetadata: s.setupMetadata,
+        })
+          .filter((issue) => issue.blocksApproval)
+          .map((issue) => `${issue.code}: ${issue.message}`)
+      );
+    } else if (s.protocolId || s.protocolVersion != null || s.setupVariant || s.setupMetadata) {
+      errors.push(`Test type '${s.testType}' has no implemented protocol contract.`);
+    }
     if (s.trials.length === 0) warnings.push(`Session on ${s.sessionDate} has no trials.`);
     for (const t of s.trials) {
       if (!t.waveform && (!t.metrics || t.metrics.length === 0)) {
@@ -50,6 +80,10 @@ export function validateCanonical(payload: CanonicalPayload, facilityId: string)
         }
         if (!METRICS[m.metricType]) {
           errors.push(`Unknown metric_type '${m.metricType}'.`);
+        } else if (protocol && !protocol.metrics.officialMetricKeys.includes(m.metricType)) {
+          errors.push(
+            `Metric '${m.metricType}' is not declared by ${protocol.id}@${protocol.version}.`
+          );
         } else if (!Number.isFinite(m.value)) {
           errors.push(
             `Non-numeric or missing value for ${m.metricType} on ${s.sessionDate} (trial ${t.trialNumber}).`
@@ -65,6 +99,19 @@ export function validateCanonical(payload: CanonicalPayload, facilityId: string)
       }
       if (t.waveform && t.waveform.force.length < t.waveform.hz) {
         warnings.push(`Trial ${t.trialNumber} waveform is under 1 s — may be unscoreable.`);
+      }
+      if (protocol && t.waveform) {
+        const attemptIssues = validateProtocolAttempt(protocol, t.waveform);
+        errors.push(
+          ...attemptIssues
+            .filter((issue) => issue.blocksApproval)
+            .map((issue) => `${issue.code}: ${issue.message}`)
+        );
+        warnings.push(
+          ...attemptIssues
+            .filter((issue) => !issue.blocksApproval)
+            .map((issue) => `${issue.code}: ${issue.message}`)
+        );
       }
     }
   }
@@ -83,10 +130,19 @@ export function importCanonical(
   const sessionIds: string[] = [];
   const trialIds: string[] = [];
   for (const s of payload.sessions) {
+    const protocol = protocolForTestType(s.testType);
+    const protocolId = protocol?.id ?? null;
+    const protocolVersion = protocol?.version ?? null;
+    const calculationVersion = protocol?.calculationVersion ?? null;
+    const setupVariant = protocol ? (s.setupVariant ?? protocol.defaultSetupVariant) : null;
+    const setupMetadata = protocol ? JSON.stringify(s.setupMetadata ?? {}) : null;
     const sessionId = newId();
     db.prepare(
-      `INSERT INTO session (id, facility_id, athlete_id, device_id, import_batch_id, test_type, session_date, notes, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO session
+       (id, facility_id, athlete_id, device_id, import_batch_id, test_type,
+        protocol_id, protocol_version, calculation_version, setup_variant, setup_metadata_json,
+        session_date, notes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       sessionId,
       facilityId,
@@ -94,6 +150,11 @@ export function importCanonical(
       s.deviceId ?? null,
       batchId,
       s.testType,
+      protocolId,
+      protocolVersion,
+      calculationVersion,
+      setupVariant,
+      setupMetadata,
       s.sessionDate,
       s.notes ?? null,
       nowIso()
@@ -103,13 +164,19 @@ export function importCanonical(
       const trialId = newId();
       const display = t.waveform ? downsample(t.waveform, 250) : null;
       db.prepare(
-        `INSERT INTO trial (id, facility_id, session_id, trial_number, raw_meta_json, waveform_json, quality_flag, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO trial
+         (id, facility_id, session_id, trial_number, protocol_id, protocol_version,
+          calculation_version, setup_variant, raw_meta_json, waveform_json, quality_flag, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         trialId,
         facilityId,
         sessionId,
         t.trialNumber,
+        protocolId,
+        protocolVersion,
+        calculationVersion,
+        setupVariant,
         t.rawMeta ? JSON.stringify(t.rawMeta) : null,
         display
           ? JSON.stringify({
@@ -331,6 +398,10 @@ export const csvGenericAdapter: Adapter<CsvInput> = {
 export interface ManualInput {
   athleteId: string;
   testType: string;
+  protocolId?: string;
+  protocolVersion?: number;
+  setupVariant?: string;
+  setupMetadata?: Record<string, unknown>;
   sessionDate: string;
   notes?: string;
   metrics: { metricType: string; side: "left" | "right" | "bilateral"; value: number }[];
@@ -355,6 +426,10 @@ export const manualEntryAdapter: Adapter<ManualInput> = {
         {
           athleteId: input.athleteId,
           testType: input.testType,
+          protocolId: input.protocolId,
+          protocolVersion: input.protocolVersion,
+          setupVariant: input.setupVariant,
+          setupMetadata: input.setupMetadata,
           sessionDate: input.sessionDate,
           notes: input.notes,
           trials: [{ trialNumber: 1, metrics: input.metrics }],

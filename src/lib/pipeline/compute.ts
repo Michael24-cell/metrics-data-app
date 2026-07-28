@@ -6,13 +6,12 @@
 
 import { getDb, newId, nowIso } from "../db/db";
 import { ForceTimeSeries } from "../calc/signal";
-import { computeCmj, computeDropJumpRsi } from "../calc/cmj";
-import { computeImtp } from "../calc/imtp";
+import { computeDropJumpRsi } from "../calc/cmj";
 import { asymmetryIndex, ASYM_METHOD_VERSION } from "../calc/asymmetry";
-import { cmjEventMarkers, imtpEventMarkers } from "../calc/curve";
 import { metricDef, ASYMMETRY_SOURCE_METRICS, IMTP_FORCE_POINT_KEYS } from "../config/metrics";
 import { checkSanity } from "../calc/signal";
 import { isValidSide, VALID_SIDES } from "./adapter";
+import { calculateProtocolAttempt, protocolForTestType } from "../protocols/registry";
 
 /**
  * Persist the event markers (ms from recording start) used to align this
@@ -56,10 +55,23 @@ export function insertMetric(
   const sanity = checkSanity(m.value, def.sanity.min, def.sanity.max);
   const quality = m.qualityFlag ?? (sanity.ok ? null : `sanity: ${sanity.reason}`);
   const id = newId();
-  getDb()
+  const db = getDb();
+  const lineage = db
     .prepare(
-      `INSERT INTO metric (id, facility_id, athlete_id, session_id, trial_id, metric_type, side, value, unit, method_version, quality_flag, source, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `SELECT protocol_id, protocol_version, setup_variant
+       FROM session WHERE facility_id = ? AND id = ?`
+    )
+    .get(facilityId, sessionId) as
+    | { protocol_id: string | null; protocol_version: number | null; setup_variant: string | null }
+    | undefined;
+  if (!lineage) throw new Error("Refusing to write a metric without a tenant-scoped parent session.");
+  db
+    .prepare(
+      `INSERT INTO metric
+       (id, facility_id, athlete_id, session_id, trial_id, metric_type,
+        protocol_id, protocol_version, calculation_version, setup_variant,
+        side, value, unit, method_version, quality_flag, source, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -68,6 +80,10 @@ export function insertMetric(
       sessionId,
       m.trialId,
       m.metricType,
+      lineage.protocol_id,
+      lineage.protocol_version,
+      m.methodVersion,
+      lineage.setup_variant,
       m.side,
       m.value,
       def.unit,
@@ -98,8 +114,11 @@ export function computeTrialMetrics(
     count++;
   };
 
-  if (testType === "cmj") {
-    const r = computeCmj(series);
+  const protocol = protocolForTestType(testType);
+  const calculated = protocol ? calculateProtocolAttempt(protocol, series) : null;
+
+  if (calculated?.testType === "cmj") {
+    const r = calculated.result;
     const v = r.methodVersion;
     put({ metricType: "cmj_jump_height", side: "bilateral", value: r.jumpHeightCm, trialId, methodVersion: v });
     put({ metricType: "cmj_mrsi", side: "bilateral", value: r.mrsi, trialId, methodVersion: v });
@@ -114,9 +133,9 @@ export function computeTrialMetrics(
       put({ metricType: "cmj_peak_propulsive_force", side: "right", value: r.peakPropulsiveForceRightN, trialId, methodVersion: v });
     }
     put({ metricType: "cmj_time_to_takeoff", side: "bilateral", value: r.timeToTakeoffS * 1000, trialId, methodVersion: v });
-    setTrialEventMarkers(facilityId, trialId, cmjEventMarkers(r, series.hz));
-  } else if (testType === "imtp") {
-    const r = computeImtp(series);
+    setTrialEventMarkers(facilityId, trialId, calculated.markers);
+  } else if (calculated?.testType === "imtp") {
+    const r = calculated.result;
     const v = r.methodVersion;
     put({ metricType: "imtp_peak_force", side: "bilateral", value: r.peakForceN, trialId, methodVersion: v });
     put({ metricType: "imtp_relative_force", side: "bilateral", value: r.relativeForceNkg, trialId, methodVersion: v });
@@ -142,7 +161,7 @@ export function computeTrialMetrics(
         put({ metricType: key, side: "right", value: point.forceRightN, trialId, methodVersion: v });
       }
     }
-    setTrialEventMarkers(facilityId, trialId, imtpEventMarkers(r, series.hz));
+    setTrialEventMarkers(facilityId, trialId, calculated.markers);
   } else if (testType === "drop_jump") {
     const r = computeDropJumpRsi(series);
     put({ metricType: "dj_rsi", side: "bilateral", value: r.rsi, trialId, methodVersion: r.methodVersion });

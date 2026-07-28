@@ -2,6 +2,10 @@ import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import fs from "node:fs";
 import { SCHEMA_SQL } from "./schema";
+import {
+  backfillBuiltinProtocolLineage,
+  ensureBuiltinProtocolCatalog,
+} from "../protocols/persistence";
 
 const DB_PATH = process.env.TRACELAB_DB_PATH || path.join(process.cwd(), "data", "tracelab.db");
 
@@ -25,6 +29,21 @@ export function initializeDatabase(db: DatabaseSync): void {
   addColumnIfMissing(db, "trial", "event_markers_json", "TEXT");
   addColumnIfMissing(db, "velocity_rep", "quality_flag", "TEXT");
   addColumnIfMissing(db, "facility", "organization_id", "TEXT");
+  addColumnIfMissing(db, "session", "protocol_id", "TEXT");
+  addColumnIfMissing(db, "session", "protocol_version", "INTEGER");
+  addColumnIfMissing(db, "session", "calculation_version", "TEXT");
+  addColumnIfMissing(db, "session", "setup_variant", "TEXT");
+  addColumnIfMissing(db, "session", "setup_metadata_json", "TEXT");
+  addColumnIfMissing(db, "trial", "protocol_id", "TEXT");
+  addColumnIfMissing(db, "trial", "protocol_version", "INTEGER");
+  addColumnIfMissing(db, "trial", "calculation_version", "TEXT");
+  addColumnIfMissing(db, "trial", "setup_variant", "TEXT");
+  addColumnIfMissing(db, "metric", "protocol_id", "TEXT");
+  addColumnIfMissing(db, "metric", "protocol_version", "INTEGER");
+  addColumnIfMissing(db, "metric", "calculation_version", "TEXT");
+  addColumnIfMissing(db, "metric", "setup_variant", "TEXT");
+  ensureBuiltinProtocolCatalog(db);
+  backfillBuiltinProtocolLineage(db);
 }
 
 export function newId(): string {
