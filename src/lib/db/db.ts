@@ -6,6 +6,7 @@ import {
   backfillBuiltinProtocolLineage,
   ensureBuiltinProtocolCatalog,
 } from "../protocols/persistence";
+import { backfillIngestionDomain } from "../ingestion/migrations";
 
 const DB_PATH = process.env.TRACELAB_DB_PATH || path.join(process.cwd(), "data", "tracelab.db");
 
@@ -15,7 +16,13 @@ export function getDb(): DatabaseSync {
   if (_db) return _db;
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   _db = new DatabaseSync(DB_PATH);
-  initializeDatabase(_db);
+  try {
+    initializeDatabase(_db);
+  } catch (error) {
+    _db.close();
+    _db = null;
+    throw error;
+  }
   return _db;
 }
 
@@ -42,8 +49,19 @@ export function initializeDatabase(db: DatabaseSync): void {
   addColumnIfMissing(db, "metric", "protocol_version", "INTEGER");
   addColumnIfMissing(db, "metric", "calculation_version", "TEXT");
   addColumnIfMissing(db, "metric", "setup_variant", "TEXT");
+  addColumnIfMissing(db, "import_batch", "lifecycle_state", "TEXT NOT NULL DEFAULT 'draft'");
+  addColumnIfMissing(db, "import_batch", "revision", "INTEGER NOT NULL DEFAULT 1");
+  addColumnIfMissing(db, "import_batch", "created_by", "TEXT");
+  addColumnIfMissing(db, "import_batch", "idempotency_key", "TEXT");
+  addColumnIfMissing(db, "import_batch", "updated_at", "TEXT");
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_idempotency
+     ON import_batch(facility_id, idempotency_key)
+     WHERE idempotency_key IS NOT NULL`
+  );
   ensureBuiltinProtocolCatalog(db);
   backfillBuiltinProtocolLineage(db);
+  backfillIngestionDomain(db);
 }
 
 export function newId(): string {

@@ -33,9 +33,21 @@ try {
      VALUES ('legacy-ath', 'legacy-fac', 'Legacy Athlete', 'test', NULL, NULL, NULL, NULL, NULL, NULL, 'active', '2026-01-01T00:00:00.000Z')`
   ).run();
   db.prepare(
+    `INSERT INTO data_source
+     (id, facility_id, adapter_key, label, kind, created_at)
+     VALUES ('legacy-source', 'legacy-fac', 'csv_generic', 'Legacy source', 'operational', '2026-01-01T00:00:00.000Z')`
+  ).run();
+  db.prepare(
+    `INSERT INTO import_batch
+     (id, facility_id, data_source_id, status, filename, created_at, completed_at)
+     VALUES ('legacy-batch', 'legacy-fac', 'legacy-source', 'complete', 'legacy.csv',
+             '2026-01-01T00:00:00.000Z', '2026-01-01T00:01:00.000Z')`
+  ).run();
+  db.prepare(
     `INSERT INTO session
-     (id, facility_id, athlete_id, test_type, session_date, created_at)
-     VALUES ('legacy-session', 'legacy-fac', 'legacy-ath', 'cmj', '2026-01-01', '2026-01-01T00:00:00.000Z')`
+     (id, facility_id, athlete_id, import_batch_id, test_type, session_date, created_at)
+     VALUES ('legacy-session', 'legacy-fac', 'legacy-ath', 'legacy-batch',
+             'cmj', '2026-01-01', '2026-01-01T00:00:00.000Z')`
   ).run();
   db.prepare(
     `INSERT INTO trial
@@ -68,8 +80,42 @@ try {
     ["metric", "protocol_version"],
     ["metric", "calculation_version"],
     ["metric", "setup_variant"],
+    ["import_batch", "lifecycle_state"],
+    ["import_batch", "revision"],
+    ["import_batch", "created_by"],
+    ["import_batch", "idempotency_key"],
+    ["import_batch", "updated_at"],
   ]) {
     if (!has(table, column)) throw new Error(`Missing migrated column ${table}.${column}`);
+  }
+  const ingestionTables = [
+    "source_object",
+    "import_job",
+    "source_profile",
+    "source_profile_version",
+    "mapping_template",
+    "mapping_template_version",
+    "staged_session",
+    "staged_attempt",
+    "staged_metric",
+    "athlete_source_identity",
+    "athlete_match",
+    "duplicate_candidate",
+    "validation_issue",
+    "import_approval",
+    "import_commit",
+    "manual_entry",
+    "athlete_submission",
+    "data_correction",
+    "reprocessing_run",
+    "official_result_lineage",
+    "ingestion_transition",
+  ];
+  for (const table of ingestionTables) {
+    const found = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
+      .get(table);
+    if (!found) throw new Error(`Missing ingestion domain table ${table}`);
   }
   const protocols = db
     .prepare(`SELECT protocol_id, version, calculation_version, contract_hash FROM test_protocol_version ORDER BY protocol_id`)
@@ -105,10 +151,36 @@ try {
   ) {
     throw new Error("Legacy CMJ protocol lineage was not backfilled.");
   }
+  const ingestionBackfill = db
+    .prepare(
+      `SELECT b.lifecycle_state, b.updated_at,
+              l.verification_state, l.source_classification,
+              (SELECT COUNT(*) FROM ingestion_transition t
+               WHERE t.entity_type = 'import_batch' AND t.entity_id = b.id) AS transitions
+       FROM import_batch b
+       JOIN official_result_lineage l ON l.import_batch_id = b.id
+       WHERE b.id = 'legacy-batch' AND l.metric_id = 'legacy-metric'`
+    )
+    .get() as {
+      lifecycle_state: string;
+      updated_at: string;
+      verification_state: string;
+      source_classification: string;
+      transitions: number;
+    };
+  if (
+    ingestionBackfill.lifecycle_state !== "completed" ||
+    !ingestionBackfill.updated_at ||
+    ingestionBackfill.verification_state !== "legacy_unverified" ||
+    ingestionBackfill.source_classification !== "historical_migration" ||
+    ingestionBackfill.transitions !== 1
+  ) {
+    throw new Error("Legacy ingestion lifecycle/lineage backfill failed.");
+  }
   const integrity = db.prepare("PRAGMA integrity_check").get() as { integrity_check: string };
   if (integrity.integrity_check !== "ok") throw new Error(`Integrity check failed: ${integrity.integrity_check}`);
   console.log(
-    "Migration verification OK: additive protocol catalog/lineage, legacy backfill, idempotent rerun, schema integrity."
+    "Migration verification OK: additive protocol + ingestion domains, legacy lifecycle/lineage backfill, idempotent rerun, schema integrity."
   );
 } finally {
   db.close();

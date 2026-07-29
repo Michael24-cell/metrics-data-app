@@ -6,14 +6,19 @@ Existing Phase 7 checkpoint observed: `78bc4f5`
 
 ## Outcome
 
+Protocol blocker status: **resolved by Protocol Milestone A (`a53f7ab`)**.
+`tracelab.cmj@1` and `tracelab.imtp@1` now provide the protocol identity,
+version, calculation, metadata, channel, and capability contracts required by
+the ingestion domain.
+
 The repository has useful tenant, authorization, audit, calculation, metric
 registry, monitoring, alert, and Agent foundations. Its current import path is
 not a staged ingestion system: CSV text and manual values are parsed in the
 request and written immediately to official `session`, `trial`, and `metric`
 tables.
 
-Implementation cannot safely enter Phase 1 yet because the request and the
-repository disagree about a required dependency:
+At the time of this audit, implementation could not safely enter Phase 1
+because the request and repository disagreed about a required dependency:
 
 - The request says versioned test-protocol infrastructure already exists and
   requires every official result to reference a protocol ID and version.

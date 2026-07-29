@@ -92,6 +92,33 @@ export function insertMetric(
       m.source ?? "computed",
       nowIso()
     );
+  db.prepare(
+    `INSERT OR IGNORE INTO official_result_lineage
+     (id, facility_id, official_session_id, metric_id, import_batch_id,
+      source_object_id, source_locator_json, source_profile_version_id,
+      mapping_template_version_id, unit_transformation_json, athlete_match_id,
+      protocol_id, protocol_version, calculation_version, import_approval_id,
+      import_commit_id, committed_by, verification_state, source_classification,
+      correction_id, authoritative_status, created_at)
+     SELECT ?, ?, ?, ?, s.import_batch_id,
+            NULL, NULL, NULL, NULL, NULL, NULL,
+            ?, ?, ?, NULL, NULL, NULL,
+            'legacy_direct_pipeline', 'historical_migration',
+            NULL, 'current', ?
+     FROM session s
+     WHERE s.facility_id = ? AND s.id = ?`
+  ).run(
+    `legacy-metric:${id}`,
+    facilityId,
+    sessionId,
+    id,
+    lineage.protocol_id,
+    lineage.protocol_version,
+    m.methodVersion,
+    nowIso(),
+    facilityId,
+    sessionId
+  );
   return id;
 }
 

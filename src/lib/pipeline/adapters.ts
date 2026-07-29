@@ -554,6 +554,25 @@ export interface BatchRunResult {
   findingsGenerated: number;
 }
 
+function ingestionLifecycleForLegacyStatus(status: string): string {
+  switch (status) {
+    case "inspected":
+      return "parsing";
+    case "validated":
+      return "ready_for_approval";
+    case "imported":
+      return "committing";
+    case "computed":
+      return "processing_downstream";
+    case "complete":
+      return "completed";
+    case "failed":
+      return "failed";
+    default:
+      return "draft";
+  }
+}
+
 export function runImportBatch<T>(
   adapter: Adapter<T>,
   input: T,
@@ -563,20 +582,33 @@ export function runImportBatch<T>(
 ): BatchRunResult {
   const db = getDb();
   const batchId = newId();
+  const createdAt = nowIso();
   db.prepare(
-    `INSERT INTO import_batch (id, facility_id, data_source_id, status, filename, created_at)
-     VALUES (?, ?, ?, 'pending', ?, ?)`
-  ).run(batchId, facilityId, dataSourceId, filename ?? null, nowIso());
+    `INSERT INTO import_batch
+     (id, facility_id, data_source_id, status, lifecycle_state, revision,
+      updated_at, filename, created_at)
+     VALUES (?, ?, ?, 'pending', 'draft', 1, ?, ?, ?)`
+  ).run(batchId, facilityId, dataSourceId, createdAt, filename ?? null, createdAt);
 
   const setStatus = (status: string, extra: Record<string, unknown> = {}) => {
+    const lifecycleState = ingestionLifecycleForLegacyStatus(status);
     db.prepare(
-      `UPDATE import_batch SET status = ?, row_count = COALESCE(?, row_count), summary_json = COALESCE(?, summary_json), error_json = COALESCE(?, error_json), completed_at = ? WHERE id = ?`
+      `UPDATE import_batch
+       SET status = ?, lifecycle_state = ?, revision = revision + 1, updated_at = ?,
+           row_count = COALESCE(?, row_count),
+           summary_json = COALESCE(?, summary_json),
+           error_json = COALESCE(?, error_json),
+           completed_at = ?
+       WHERE facility_id = ? AND id = ?`
     ).run(
       status,
+      lifecycleState,
+      nowIso(),
       (extra.rowCount as number) ?? null,
       extra.summary ? JSON.stringify(extra.summary) : null,
       extra.error ? JSON.stringify(extra.error) : null,
       status === "complete" || status === "failed" ? nowIso() : null,
+      facilityId,
       batchId
     );
   };

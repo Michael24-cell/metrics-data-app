@@ -59,6 +59,11 @@ CREATE TABLE IF NOT EXISTS import_batch (
   facility_id TEXT NOT NULL REFERENCES facility(id),
   data_source_id TEXT NOT NULL REFERENCES data_source(id),
   status TEXT NOT NULL,                          -- pending | inspected | validated | imported | computed | complete | failed
+  lifecycle_state TEXT NOT NULL DEFAULT 'draft',
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT,
+  idempotency_key TEXT,
+  updated_at TEXT,
   filename TEXT,
   row_count INTEGER,
   error_json TEXT,
@@ -89,6 +94,377 @@ CREATE TABLE IF NOT EXISTS test_protocol_version (
   published_at TEXT NOT NULL,
   UNIQUE(protocol_id, version)
 );
+
+/* ================= ingestion domain model (Phase 1) ================= */
+
+CREATE TABLE IF NOT EXISTS mapping_template (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  name TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'active',          -- active | paused | archived
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mapping_template_facility ON mapping_template(facility_id, state);
+
+CREATE TABLE IF NOT EXISTS mapping_template_version (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  mapping_template_id TEXT NOT NULL REFERENCES mapping_template(id),
+  version INTEGER NOT NULL,
+  mapping_json TEXT NOT NULL,
+  transform_version TEXT NOT NULL,
+  created_by TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(mapping_template_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS source_profile (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  name TEXT NOT NULL,
+  adapter_key TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'active',          -- active | paused | archived
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_profile_facility ON source_profile(facility_id, state);
+
+CREATE TABLE IF NOT EXISTS source_profile_version (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  source_profile_id TEXT NOT NULL REFERENCES source_profile(id),
+  version INTEGER NOT NULL,
+  expected_signature_json TEXT NOT NULL,
+  mapping_template_version_id TEXT REFERENCES mapping_template_version(id),
+  unit_assumptions_json TEXT NOT NULL,
+  athlete_identifier_strategy_json TEXT NOT NULL,
+  protocol_mapping_json TEXT NOT NULL,
+  timezone_behavior_json TEXT NOT NULL,
+  required_defaults_json TEXT NOT NULL,
+  created_by TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(source_profile_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS source_object (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  import_batch_id TEXT NOT NULL REFERENCES import_batch(id),
+  uploader_user_id TEXT,
+  original_filename TEXT NOT NULL,
+  safe_display_filename TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  detected_file_type TEXT,
+  byte_size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  storage_reference TEXT NOT NULL,
+  uploaded_at TEXT NOT NULL,
+  parser_version TEXT,
+  mapping_template_version_id TEXT REFERENCES mapping_template_version(id),
+  source_profile_version_id TEXT REFERENCES source_profile_version(id),
+  vendor_identifier TEXT,
+  device_identifier TEXT,
+  quarantine_status TEXT NOT NULL DEFAULT 'pending', -- pending | cleared | rejected | unavailable
+  retention_status TEXT NOT NULL DEFAULT 'active',   -- active | retained | superseded | deleted
+  source_classification TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(facility_id, sha256, storage_reference)
+);
+CREATE INDEX IF NOT EXISTS idx_source_object_batch ON source_object(facility_id, import_batch_id);
+
+CREATE TABLE IF NOT EXISTS import_job (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  import_batch_id TEXT NOT NULL REFERENCES import_batch(id),
+  source_object_id TEXT REFERENCES source_object(id),
+  job_type TEXT NOT NULL,                        -- parse | validate | commit | downstream | reprocess
+  status TEXT NOT NULL,                          -- queued | running | succeeded | failed | cancelled
+  idempotency_key TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  deadline_at TEXT,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  UNIQUE(facility_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_import_job_batch ON import_job(facility_id, import_batch_id, status);
+
+CREATE TABLE IF NOT EXISTS staged_session (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  import_batch_id TEXT NOT NULL REFERENCES import_batch(id),
+  source_object_id TEXT REFERENCES source_object(id),
+  source_locator_json TEXT NOT NULL,
+  source_classification TEXT NOT NULL,
+  lifecycle_state TEXT NOT NULL DEFAULT 'unresolved',
+  revision INTEGER NOT NULL DEFAULT 1,
+  validation_revision INTEGER NOT NULL DEFAULT 0,
+  athlete_id TEXT REFERENCES athlete(id),
+  protocol_id TEXT,
+  protocol_version INTEGER,
+  calculation_version TEXT,
+  setup_variant TEXT,
+  setup_metadata_json TEXT,
+  test_type TEXT,
+  session_datetime TEXT,
+  timezone_name TEXT,
+  timezone_assumption_json TEXT,
+  session_label TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_staged_session_queue
+  ON staged_session(facility_id, lifecycle_state, import_batch_id);
+
+CREATE TABLE IF NOT EXISTS staged_attempt (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  staged_session_id TEXT NOT NULL REFERENCES staged_session(id),
+  attempt_number INTEGER NOT NULL,
+  lifecycle_state TEXT NOT NULL DEFAULT 'needs_review', -- valid | quality_limited | invalid | needs_metadata | needs_review
+  source_sample_range_json TEXT,
+  channel_metadata_json TEXT NOT NULL DEFAULT '{}',
+  waveform_storage_reference TEXT,
+  event_markers_json TEXT,
+  inclusion_state TEXT NOT NULL DEFAULT 'included',     -- included | excluded
+  exclusion_reason TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(staged_session_id, attempt_number)
+);
+
+CREATE TABLE IF NOT EXISTS staged_metric (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  staged_session_id TEXT NOT NULL REFERENCES staged_session(id),
+  staged_attempt_id TEXT REFERENCES staged_attempt(id),
+  metric_key TEXT NOT NULL,
+  side TEXT NOT NULL,
+  original_value REAL,
+  original_unit TEXT,
+  canonical_value REAL,
+  canonical_unit TEXT,
+  conversion_method TEXT,
+  conversion_version TEXT,
+  calculation_version TEXT,
+  verification_state TEXT NOT NULL DEFAULT 'unverified',
+  source_locator_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_staged_metric_session ON staged_metric(facility_id, staged_session_id);
+
+CREATE TABLE IF NOT EXISTS athlete_source_identity (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  source_profile_id TEXT REFERENCES source_profile(id),
+  external_namespace TEXT NOT NULL,
+  external_identifier TEXT NOT NULL,
+  normalized_identity TEXT,
+  athlete_id TEXT REFERENCES athlete(id),
+  status TEXT NOT NULL DEFAULT 'confirmed',      -- confirmed | disputed | superseded
+  confirmed_by TEXT,
+  confirmed_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(facility_id, external_namespace, external_identifier)
+);
+
+CREATE TABLE IF NOT EXISTS athlete_match (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  staged_session_id TEXT NOT NULL REFERENCES staged_session(id),
+  athlete_source_identity_id TEXT REFERENCES athlete_source_identity(id),
+  athlete_id TEXT REFERENCES athlete(id),
+  match_state TEXT NOT NULL,                     -- unresolved | suggested | confirmed | rejected | superseded
+  match_method TEXT NOT NULL,
+  confidence REAL,
+  reason_json TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  confirmed_by TEXT,
+  confirmed_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_athlete_match_session ON athlete_match(facility_id, staged_session_id);
+
+CREATE TABLE IF NOT EXISTS duplicate_candidate (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  staged_session_id TEXT NOT NULL REFERENCES staged_session(id),
+  existing_session_id TEXT REFERENCES session(id),
+  other_staged_session_id TEXT REFERENCES staged_session(id),
+  classification TEXT NOT NULL,                  -- exact | probable | possible | not_duplicate
+  evidence_json TEXT NOT NULL,
+  resolution TEXT,                               -- link | distinct | reject | supersede
+  resolution_reason TEXT,
+  resolved_by TEXT,
+  resolved_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_duplicate_candidate_session
+  ON duplicate_candidate(facility_id, staged_session_id, classification);
+
+CREATE TABLE IF NOT EXISTS validation_issue (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  import_batch_id TEXT NOT NULL REFERENCES import_batch(id),
+  staged_session_id TEXT REFERENCES staged_session(id),
+  staged_attempt_id TEXT REFERENCES staged_attempt(id),
+  staged_metric_id TEXT REFERENCES staged_metric(id),
+  code TEXT NOT NULL,
+  explanation TEXT NOT NULL,
+  severity TEXT NOT NULL,                        -- info | warning | error
+  blocks_approval INTEGER NOT NULL,
+  suggested_action TEXT,
+  status TEXT NOT NULL DEFAULT 'open',           -- open | resolved | waived | superseded
+  resolution_json TEXT,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_validation_issue_queue
+  ON validation_issue(facility_id, import_batch_id, status, blocks_approval);
+
+CREATE TABLE IF NOT EXISTS import_approval (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  import_batch_id TEXT NOT NULL REFERENCES import_batch(id),
+  staged_session_id TEXT REFERENCES staged_session(id),
+  approved_revision INTEGER NOT NULL,
+  decision TEXT NOT NULL,                        -- approved | rejected
+  user_id TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_import_approval_batch ON import_approval(facility_id, import_batch_id);
+
+CREATE TABLE IF NOT EXISTS import_commit (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  import_batch_id TEXT NOT NULL REFERENCES import_batch(id),
+  staged_session_id TEXT NOT NULL REFERENCES staged_session(id),
+  import_approval_id TEXT NOT NULL REFERENCES import_approval(id),
+  official_session_id TEXT REFERENCES session(id),
+  status TEXT NOT NULL,                          -- pending | committed | downstream_pending | completed | failed
+  idempotency_key TEXT NOT NULL,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  committed_at TEXT,
+  UNIQUE(facility_id, idempotency_key),
+  UNIQUE(staged_session_id)
+);
+
+CREATE TABLE IF NOT EXISTS manual_entry (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  import_batch_id TEXT NOT NULL REFERENCES import_batch(id),
+  created_by TEXT NOT NULL,
+  lifecycle_state TEXT NOT NULL DEFAULT 'draft', -- draft | submitted | approved | rejected | superseded
+  revision INTEGER NOT NULL DEFAULT 1,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS athlete_submission (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  athlete_id TEXT NOT NULL REFERENCES athlete(id),
+  submitter_user_id TEXT NOT NULL,
+  import_batch_id TEXT,
+  lifecycle_state TEXT NOT NULL DEFAULT 'draft', -- draft | submitted | needs_more_information | under_review | approved | rejected | superseded
+  revision INTEGER NOT NULL DEFAULT 1,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_athlete_submission_review
+  ON athlete_submission(facility_id, lifecycle_state, athlete_id);
+
+CREATE TABLE IF NOT EXISTS data_correction (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  official_session_id TEXT NOT NULL REFERENCES session(id),
+  metric_id TEXT REFERENCES metric(id),
+  correction_type TEXT NOT NULL,
+  requested_by TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  previous_values_json TEXT NOT NULL,
+  new_values_json TEXT NOT NULL,
+  impact_json TEXT NOT NULL,
+  lifecycle_state TEXT NOT NULL DEFAULT 'draft', -- draft | approved | applying | completed | failed | superseded
+  supersedes_correction_id TEXT REFERENCES data_correction(id),
+  created_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS reprocessing_run (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  official_session_id TEXT NOT NULL REFERENCES session(id),
+  requested_by TEXT NOT NULL,
+  target_protocol_id TEXT,
+  target_protocol_version INTEGER,
+  target_calculation_version TEXT,
+  target_mapping_template_version_id TEXT REFERENCES mapping_template_version(id),
+  lifecycle_state TEXT NOT NULL DEFAULT 'queued', -- queued | running | completed | failed | cancelled
+  idempotency_key TEXT NOT NULL,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  UNIQUE(facility_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS official_result_lineage (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  official_session_id TEXT NOT NULL REFERENCES session(id),
+  metric_id TEXT REFERENCES metric(id),
+  import_batch_id TEXT REFERENCES import_batch(id),
+  source_object_id TEXT REFERENCES source_object(id),
+  source_locator_json TEXT,
+  source_profile_version_id TEXT REFERENCES source_profile_version(id),
+  mapping_template_version_id TEXT REFERENCES mapping_template_version(id),
+  unit_transformation_json TEXT,
+  athlete_match_id TEXT REFERENCES athlete_match(id),
+  protocol_id TEXT,
+  protocol_version INTEGER,
+  calculation_version TEXT,
+  import_approval_id TEXT REFERENCES import_approval(id),
+  import_commit_id TEXT REFERENCES import_commit(id),
+  committed_by TEXT,
+  verification_state TEXT NOT NULL,
+  source_classification TEXT NOT NULL,
+  correction_id TEXT REFERENCES data_correction(id),
+  authoritative_status TEXT NOT NULL DEFAULT 'current', -- current | superseded | invalid
+  created_at TEXT NOT NULL,
+  UNIQUE(official_session_id, metric_id)
+);
+CREATE INDEX IF NOT EXISTS idx_official_lineage_current
+  ON official_result_lineage(facility_id, official_session_id, authoritative_status);
+
+CREATE TABLE IF NOT EXISTS ingestion_transition (
+  id TEXT PRIMARY KEY,
+  facility_id TEXT NOT NULL REFERENCES facility(id),
+  entity_type TEXT NOT NULL,                     -- import_batch | staged_session
+  entity_id TEXT NOT NULL,
+  from_state TEXT,
+  to_state TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  user_id TEXT,
+  reason TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(entity_type, entity_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_ingestion_transition_entity
+  ON ingestion_transition(facility_id, entity_type, entity_id, revision);
 
 CREATE TABLE IF NOT EXISTS permission_record (
   id TEXT PRIMARY KEY,
